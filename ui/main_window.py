@@ -16,7 +16,9 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ui.distance_setting_window import DistanceSettingWindow
 from ui.zone_setting_window import ZoneSettingWindow
+from vision.distance_config import load_distance_thresholds
 from vision.yolo_thread import YoloThread
 
 
@@ -36,10 +38,13 @@ class MainWindow(QMainWindow):
         self.fps = 0.0
         self.last_info = ""
         self.yolo = None
+        self.zone_win = None
+        self.distance_win = None
 
         self._build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
+        self.update_distance_status()
 
         try:
             self.yolo = YoloThread()
@@ -64,12 +69,23 @@ class MainWindow(QMainWindow):
 
         title = QLabel("Third Eye - Object Detection and Distance Warning")
         title.setFont(QFont("Arial", 18, QFont.Bold))
+        self.distance_status = QLabel("")
+        self.distance_status.setStyleSheet("font-size:13px; color:#333;")
+
+        self.btn_distance = QPushButton("Distance Setting")
+        self.btn_distance.setFixedSize(165, 45)
+        self.btn_distance.setStyleSheet("background:#C9C9C9; border-radius:8px;")
+        self.btn_distance.clicked.connect(self.open_distance_setting)
+
         self.btn_setting = QPushButton("Zone Setting")
         self.btn_setting.setFixedSize(140, 45)
         self.btn_setting.setStyleSheet("background:#C9C9C9; border-radius:8px;")
         self.btn_setting.clicked.connect(self.open_zone_setting)
+
         header_layout.addWidget(title)
         header_layout.addStretch()
+        header_layout.addWidget(self.distance_status)
+        header_layout.addWidget(self.btn_distance)
         header_layout.addWidget(self.btn_setting)
 
         control = QFrame()
@@ -88,7 +104,7 @@ class MainWindow(QMainWindow):
             control_layout.addWidget(button)
         control_layout.addStretch()
         self.btn_open.clicked.connect(self.open_camera)
-        self.btn_close.clicked.connect(self.close_camera)
+        self.btn_close.clicked.connect(lambda: self.close_camera())
         self.btn_video.clicked.connect(self.open_video)
 
         content = QFrame()
@@ -110,6 +126,14 @@ class MainWindow(QMainWindow):
         main.addWidget(header)
         main.addWidget(control)
         main.addWidget(content)
+
+    def update_distance_status(self):
+        thresholds = load_distance_thresholds()
+        self.distance_status.setText(
+            f"Danger <= {thresholds['danger']} m | "
+            f"Warning <= {thresholds['warning']} m | "
+            f"Safe > {thresholds['warning']} m"
+        )
 
     def open_camera(self):
         if self.cap is not None:
@@ -208,6 +232,18 @@ class MainWindow(QMainWindow):
 
     def on_yolo_error(self, message):
         self.last_info = f"<span style='color:red;'>{message}</span>"
+
+    def open_distance_setting(self):
+        self.distance_win = DistanceSettingWindow()
+        self.distance_win.thresholds_saved.connect(self.on_thresholds_saved)
+        self.distance_win.show()
+
+    def on_thresholds_saved(self, danger, warning):
+        self.update_distance_status()
+        self.last_info = (
+            f"<span style='color:white;'>Distance setting saved: "
+            f"Danger <= {danger} M, Warning <= {warning} M</span>"
+        )
 
     def open_zone_setting(self):
         image_path = None
