@@ -21,30 +21,30 @@ ZONE_FILE = PROJECT_ROOT / "zones" / "active.txt"
 
 # Camera/distance calibration
 # FOCAL_LENGTH should be calibrated with a known object distance for best accuracy.
-FOCAL_LENGTH = 600
+FOCAL_LENGTH = 800
 
 # Approximate real-world object heights in meters.
 REAL_HEIGHT = {
-    "person": 1.70,
-    "car": 1.55,
-    "truck": 3.00,
-    "motorcycle": 1.25,
+    "person": 1.65,
+    "car": 1.50,
+    "truck": 2.80,
+    "motorcycle": 1.20,
 }
 
 # Practical confidence thresholds for real webcam/video use.
 # Higher values reduce false positives. Lower values detect more objects but may be noisy.
 CLASS_CONF = {
-    "person": 0.30,
-    "car": 0.40,
-    "truck": 0.55,
-    "motorcycle": 0.35,
+    "person": 0.60,
+    "car": 0.70,
+    "truck": 0.70,
+    "motorcycle": 0.60,
 }
 
 MODEL_IMGSZ = 640
 MODEL_IOU = 0.45
 MODEL_MAX_DET = 30
 
-MIN_BOX_HEIGHT = 18
+MIN_BOX_HEIGHT = 14
 SMOOTHING_ALPHA = 0.35
 TRACK_IOU_THRESHOLD = 0.30
 DANGER_HYSTERESIS_M = 0.60
