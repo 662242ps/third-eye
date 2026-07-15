@@ -1,6 +1,6 @@
 # Third Eye
 
-Desktop application for detecting road objects from a camera or video, with a configurable warning zone.
+Desktop application for detecting road objects from a camera or video, with configurable warning distance and warning zone.
 
 ## Setup
 
@@ -15,6 +15,18 @@ python main.py
 ```
 
 `models/best.pt` is required and is included in this repository.
+
+## Distance warning setting
+
+Click **Distance Setting** in the main window to adjust the distance thresholds in meters.
+
+Default values:
+
+- Danger: distance <= 5 m
+- Warning: distance <= 20 m
+- Safe: distance > 20 m
+
+The values are saved in `settings/distance_thresholds.json` and are reloaded during detection.
 
 ## Notes
 
