@@ -1,18 +1,27 @@
-import os
-import cv2
 import time
+from pathlib import Path
 
-from PyQt5.QtWidgets import (
-    QMainWindow, QWidget,
-    QLabel, QPushButton, QTextEdit,
-    QVBoxLayout, QHBoxLayout,
-    QFrame, QFileDialog
-)
-from PyQt5.QtGui import QImage, QPixmap, QFont
+import cv2
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QFont, QImage, QPixmap
+from PyQt5.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ui.zone_setting_window import ZoneSettingWindow
 from vision.yolo_thread import YoloThread
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEMP_DIR = PROJECT_ROOT / "tmp"
 
 
 class MainWindow(QMainWindow):
@@ -21,216 +30,197 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Third Eye")
         self.resize(1400, 800)
 
-        # runtime
         self.cap = None
-
-        # fps
+        self.current_frame = None
         self.last_time = time.time()
         self.fps = 0.0
+        self.last_info = ""
+        self.yolo = None
 
-        # ================= UI =================
+        self._build_ui()
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_frame)
+
+        try:
+            self.yolo = YoloThread()
+            self.yolo.result_ready.connect(self.on_yolo_result)
+            self.yolo.error_ready.connect(self.on_yolo_error)
+            self.yolo.start()
+        except Exception as error:
+            self.alert.setText(f"Cannot load YOLO model: {error}")
+
+    def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         main = QVBoxLayout(central)
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
-        # ---------- Header ----------
         header = QFrame()
         header.setFixedHeight(70)
         header.setStyleSheet("background:#E6E6E6;")
-        h = QHBoxLayout(header)
-        h.setContentsMargins(20, 0, 20, 0)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 0, 20, 0)
 
-        title = QLabel("Third Eye โปรแกรมทดสอบตรวจจับและวัดระยะ")
+        title = QLabel("Third Eye - Object Detection and Distance Warning")
         title.setFont(QFont("Arial", 18, QFont.Bold))
-
-        self.btn_setting = QPushButton("ตั้งค่า ⚙")
-        self.btn_setting.setFixedSize(120, 45)
+        self.btn_setting = QPushButton("Zone Setting")
+        self.btn_setting.setFixedSize(140, 45)
         self.btn_setting.setStyleSheet("background:#C9C9C9; border-radius:8px;")
         self.btn_setting.clicked.connect(self.open_zone_setting)
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        header_layout.addWidget(self.btn_setting)
 
-        h.addWidget(title)
-        h.addStretch()
-        h.addWidget(self.btn_setting)
-
-        # ---------- Control ----------
         control = QFrame()
         control.setFixedHeight(90)
         control.setStyleSheet("background:#5A5A5A;")
-        c = QHBoxLayout(control)
-        c.setContentsMargins(40, 0, 0, 0)
-        c.setSpacing(20)
+        control_layout = QHBoxLayout(control)
+        control_layout.setContentsMargins(40, 0, 0, 0)
+        control_layout.setSpacing(20)
 
         self.btn_open = QPushButton("Open Camera")
         self.btn_close = QPushButton("Close Camera")
         self.btn_video = QPushButton("Upload Video")
-
-        for b in (self.btn_open, self.btn_close, self.btn_video):
-            b.setFixedSize(220, 50)
-            b.setStyleSheet(
-                "background:#D0D0D0; border-radius:10px; font-size:16px;"
-            )
-
+        for button in (self.btn_open, self.btn_close, self.btn_video):
+            button.setFixedSize(220, 50)
+            button.setStyleSheet("background:#D0D0D0; border-radius:10px; font-size:16px;")
+            control_layout.addWidget(button)
+        control_layout.addStretch()
         self.btn_open.clicked.connect(self.open_camera)
         self.btn_close.clicked.connect(self.close_camera)
         self.btn_video.clicked.connect(self.open_video)
 
-        c.addWidget(self.btn_open)
-        c.addWidget(self.btn_close)
-        c.addWidget(self.btn_video)
-        c.addStretch()
-
-        # ---------- Content ----------
         content = QFrame()
         content.setStyleSheet("background:#5A5A5A;")
-        ct = QHBoxLayout(content)
-        ct.setContentsMargins(40, 20, 40, 20)
-        ct.setSpacing(30)
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(40, 20, 40, 20)
+        content_layout.setSpacing(30)
 
-        self.video = QLabel()
+        self.video = QLabel(alignment=Qt.AlignCenter)
         self.video.setMinimumSize(900, 520)
         self.video.setStyleSheet("background:black;")
-        self.video.setAlignment(Qt.AlignCenter)
-
         self.alert = QTextEdit()
         self.alert.setReadOnly(True)
         self.alert.setMinimumWidth(320)
-        self.alert.setStyleSheet(
-            "background:black; color:yellow; font-size:18px;"
-        )
-
-        ct.addWidget(self.video)
-        ct.addWidget(self.alert)
+        self.alert.setStyleSheet("background:black; color:yellow; font-size:18px;")
+        content_layout.addWidget(self.video)
+        content_layout.addWidget(self.alert)
 
         main.addWidget(header)
         main.addWidget(control)
         main.addWidget(content)
 
-        # ---------- Timer ----------
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
-
-        # 🔥 YOLO Thread (ใหม่)
-        self.yolo = YoloThread()
-        self.yolo.result_ready.connect(self.on_yolo_result)
-        self.yolo.start()
-
-        self.last_info = ""
-
-    # ================= Camera / Video =================
     def open_camera(self):
         if self.cap is not None:
             return
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
-            self.alert.setText("❌ Cannot open camera")
+            self.cap.release()
             self.cap = None
+            self.alert.setText("Cannot open camera")
             return
-        self.timer.start(33)   # ~30 FPS คงที่ → ลื่น
+        self.last_time = time.time()
+        self.timer.start(33)
         self.alert.setText("Camera opened")
 
     def open_video(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Video", "", "Video Files (*.mp4 *.avi)"
+            self, "Open Video", "", "Video Files (*.mp4 *.avi *.mov *.mkv)"
         )
         if not path:
             return
-        if self.cap:
-            self.cap.release()
+
+        self.close_camera(clear_display=False)
         self.cap = cv2.VideoCapture(path)
+        if not self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
+            self.alert.setText("Cannot open video")
+            return
+        self.last_time = time.time()
         self.timer.start(33)
         self.alert.setText("Video opened")
 
-    def close_camera(self):
-        if self.cap:
-            self.timer.stop()
+    def close_camera(self, clear_display=True):
+        self.timer.stop()
+        if self.cap is not None:
             self.cap.release()
             self.cap = None
-            self.alert.setText("Camera closed")
+        self.current_frame = None
+        if self.yolo is not None:
+            self.yolo.clear_frame()
+        if clear_display:
             self.video.clear()
+            self.alert.setText("Camera closed")
 
-    # ================= Loop =================
     def update_frame(self):
         if self.cap is None:
             return
 
         ret, frame = self.cap.read()
         if not ret:
+            self.close_camera()
+            self.alert.setText("Video ended or camera frame unavailable")
             return
 
-        # 🔥 เปลี่ยนตรงนี้
         frame = cv2.resize(frame, (800, 600))
+        self.current_frame = frame.copy()
+        if self.yolo is not None:
+            self.yolo.update_frame(frame)
 
-        # ส่ง frame ให้ YOLO คิด
-        self.yolo.update_frame(frame)
-
-        # วาด detection
-        for d in self.yolo.last_detections:
-            x1, y1, x2, y2 = d["box"]
-            color = d["color"]
-
+        for detection in self.yolo.get_detections() if self.yolo else []:
+            x1, y1, x2, y2 = detection["box"]
+            color = detection["color"]
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 frame,
-                f'{d["label"]} {d["dist"]} M [{d["status"]}]',
+                f'{detection["label"]} {detection["dist"]} M [{detection["status"]}]',
                 (x1, y1 - 8),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 color,
-                2
+                2,
             )
 
-        # วาด zone
-        zone = self.yolo.get_zone()
+        zone = self.yolo.get_zone() if self.yolo else None
         if zone is not None:
             cv2.polylines(frame, [zone], True, (0, 0, 255), 2)
 
-        # FPS
         now = time.time()
         self.fps = 1.0 / max(now - self.last_time, 1e-6)
         self.last_time = now
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        img = QImage(frame.data, w, h, ch * w, QImage.Format_RGB888)
-
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = rgb_frame.shape
+        image = QImage(
+            rgb_frame.data, width, height, channels * width, QImage.Format_RGB888
+        ).copy()
         self.video.setPixmap(
-            QPixmap.fromImage(img).scaled(
-                self.video.size(),
-                Qt.KeepAspectRatio
-            )
+            QPixmap.fromImage(image).scaled(self.video.size(), Qt.KeepAspectRatio)
         )
-
         self.alert.setHtml(
-            f"{self.last_info}<br>"
-            f"<span style='color:white;'>FPS: {self.fps:.1f}</span>"
+            f"{self.last_info}<br><span style='color:white;'>FPS: {self.fps:.1f}</span>"
         )
 
-
-    # ================= YOLO Result =================
     def on_yolo_result(self, info):
         self.last_info = info
 
-    # ================= Zone Setting =================
+    def on_yolo_error(self, message):
+        self.last_info = f"<span style='color:red;'>{message}</span>"
+
     def open_zone_setting(self):
         image_path = None
-        os.makedirs("tmp", exist_ok=True)
+        TEMP_DIR.mkdir(exist_ok=True)
+        if self.current_frame is not None:
+            image_path = TEMP_DIR / "zone_preview.jpg"
+            cv2.imwrite(str(image_path), self.current_frame)
 
-        if self.cap and self.cap.isOpened():
-            ret, frame = self.cap.read()
-            if ret:
-                image_path = "tmp/zone_preview.jpg"
-                cv2.imwrite(image_path, frame)
-
-        self.zone_win = ZoneSettingWindow(image_path)
+        self.zone_win = ZoneSettingWindow(str(image_path) if image_path else None)
         self.zone_win.show()
 
-    # ================= Close =================
-    def closeEvent(self, e):
-        self.timer.stop()
-        if self.yolo:
+    def closeEvent(self, event):
+        self.close_camera()
+        if self.yolo is not None and self.yolo.isRunning():
             self.yolo.stop()
-        if self.cap:
-            self.cap.release()
-        e.accept()
+        event.accept()
