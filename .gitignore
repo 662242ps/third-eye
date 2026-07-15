@@ -1,0 +1,14 @@
+# Python virtual environments
+cvce/
+venv/
+
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+
+# Runtime-generated previews
+tmp/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
