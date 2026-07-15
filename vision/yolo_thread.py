@@ -7,6 +7,8 @@ import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from ultralytics import YOLO
 
+from vision.distance_config import load_distance_thresholds
+
 
 FOCAL_LENGTH = 600
 REAL_HEIGHT = {
@@ -22,9 +24,6 @@ CLASS_CONF = {
     "truck": 0.75,
     "motorcycle": 0.2,
 }
-
-DANGER_DIST = 5.0
-WARNING_DIST = 15.0
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_FILE = PROJECT_ROOT / "models" / "best.pt"
@@ -148,6 +147,10 @@ class YoloThread(QThread):
                 self.zone_mtime = mtime
 
     def _detect(self, frame):
+        thresholds = load_distance_thresholds()
+        danger_dist = thresholds["danger"]
+        warning_dist = thresholds["warning"]
+
         results = self.model(
             frame,
             conf=min(CLASS_CONF.values()),
@@ -174,9 +177,9 @@ class YoloThread(QThread):
                 distance = round(
                     (REAL_HEIGHT[label] * FOCAL_LENGTH) / max(y2 - y1, 1), 2
                 )
-                if distance <= DANGER_DIST:
+                if distance <= danger_dist:
                     status, color, html = "DANGER", (0, 0, 255), "red"
-                elif distance <= WARNING_DIST:
+                elif distance <= warning_dist:
                     status, color, html = "WARNING", (0, 165, 255), "orange"
                 else:
                     status, color, html = "SAFE", (0, 255, 0), "lime"
@@ -198,12 +201,18 @@ class YoloThread(QThread):
     def _format_result(detections):
         if not detections:
             return '<span style="color:gray;">No object</span>'
-        return "".join(
+        thresholds = load_distance_thresholds()
+        header = (
+            f'<span style="color:white;">Danger <= {thresholds["danger"]} M, '
+            f'Warning <= {thresholds["warning"]} M</span><br>'
+        )
+        rows = "".join(
             f'<span style="color:{detection["html"]};">'
             f'{index}. {detection["label"]} {detection["dist"]} M '
             f'[{detection["status"]}]</span><br>'
             for index, detection in enumerate(detections, 1)
         )
+        return header + rows
 
     def stop(self):
         self._stop_requested.set()
