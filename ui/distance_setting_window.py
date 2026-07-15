@@ -14,13 +14,59 @@ from PyQt5.QtWidgets import (
 from vision.distance_config import load_distance_thresholds, save_distance_thresholds
 
 
+APP_STYLE = """
+QMainWindow {
+    background: #0f172a;
+}
+QLabel {
+    color: #e5e7eb;
+}
+QFrame#header {
+    background: #111827;
+    border-bottom: 1px solid #263143;
+}
+QFrame#card {
+    background: #172033;
+    border: 1px solid #2d3a4f;
+    border-radius: 18px;
+}
+QDoubleSpinBox {
+    background: #0b1220;
+    color: #f8fafc;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 16px;
+}
+QDoubleSpinBox:focus {
+    border: 1px solid #38bdf8;
+}
+QPushButton#primaryButton {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    padding: 10px 18px;
+    font-size: 16px;
+    font-weight: 700;
+}
+QPushButton#primaryButton:hover {
+    background: #1d4ed8;
+}
+QPushButton#primaryButton:pressed {
+    background: #1e40af;
+}
+"""
+
+
 class DistanceSettingWindow(QMainWindow):
     thresholds_saved = pyqtSignal(float, float)
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Third Eye - Distance Setting")
-        self.resize(520, 360)
+        self.setWindowTitle("Third Eye - ตั้งค่าระยะเตือนภัย")
+        self.resize(620, 430)
+        self.setStyleSheet(APP_STYLE)
         self._build_ui()
         self._load_values()
 
@@ -31,49 +77,69 @@ class DistanceSettingWindow(QMainWindow):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
-        header = QFrame()
-        header.setFixedHeight(70)
-        header.setStyleSheet("background:#E6E6E6;")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(20, 0, 20, 0)
-        title = QLabel("Distance Warning Setting")
-        title.setFont(QFont("Arial", 16, QFont.Bold))
+        header = QFrame(objectName="header")
+        header.setFixedHeight(82)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(28, 12, 28, 12)
+        header_layout.setSpacing(2)
+
+        title = QLabel("ตั้งค่าระยะเตือนภัย")
+        title.setFont(QFont("Arial", 18, QFont.Bold))
+        subtitle = QLabel("กำหนดระยะเป็นเมตร ระบบจะใช้ค่านี้ในการแบ่ง อันตราย / ระวัง / ปลอดภัย")
+        subtitle.setStyleSheet("color:#94a3b8; font-size:13px;")
         header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
 
         body = QFrame()
-        body.setStyleSheet("background:#6A6A6A;")
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(35, 25, 35, 25)
+        body_layout.setContentsMargins(26, 26, 26, 26)
         body_layout.setSpacing(18)
 
-        description = QLabel(
-            "Set the distance thresholds in meters.\n"
-            "Danger: distance <= danger value\n"
-            "Warning: distance <= warning value\n"
-            "Safe: distance > warning value"
+        card = QFrame(objectName="card")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(28, 26, 28, 26)
+        card_layout.setSpacing(20)
+
+        explanation = QLabel(
+            "หลักการทำงาน\n"
+            "• อันตราย: ระยะน้อยกว่าหรือเท่ากับค่าที่กำหนด\n"
+            "• ระวัง: ระยะมากกว่าอันตราย แต่ไม่เกินค่าระวัง\n"
+            "• ปลอดภัย: ระยะมากกว่าค่าระวัง"
         )
-        description.setStyleSheet("color:white; font-size:14px;")
-        body_layout.addWidget(description)
+        explanation.setStyleSheet(
+            "background:#0b1220; color:#cbd5e1; border-radius:12px; "
+            "padding:14px; font-size:14px; line-height:1.4;"
+        )
+        card_layout.addWidget(explanation)
 
         self.danger_spin = self._make_spinbox()
         self.warning_spin = self._make_spinbox()
+        card_layout.addLayout(self._make_row("ระยะอันตราย", "Danger", self.danger_spin, "#ef4444"))
+        card_layout.addLayout(self._make_row("ระยะระวัง", "Warning", self.warning_spin, "#f59e0b"))
 
-        body_layout.addLayout(self._make_row("Danger distance (meters)", self.danger_spin))
-        body_layout.addLayout(self._make_row("Warning distance (meters)", self.warning_spin))
+        self.preview = QLabel("")
+        self.preview.setStyleSheet(
+            "background:#101827; color:#e5e7eb; border:1px solid #243244; "
+            "border-radius:12px; padding:12px; font-size:14px;"
+        )
+        card_layout.addWidget(self.preview)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color:yellow; font-size:13px;")
-        body_layout.addWidget(self.status)
-        body_layout.addStretch()
+        self.status.setStyleSheet("color:#facc15; font-size:13px;")
+        card_layout.addWidget(self.status)
 
-        save_button = QPushButton("Save")
-        save_button.setFixedSize(160, 45)
-        save_button.setStyleSheet("background:#E0E0E0; border-radius:10px; font-size:16px;")
+        save_button = QPushButton("บันทึกการตั้งค่า")
+        save_button.setObjectName("primaryButton")
+        save_button.setFixedHeight(48)
         save_button.clicked.connect(self.save_values)
-        body_layout.addWidget(save_button, alignment=Qt.AlignCenter)
+        card_layout.addWidget(save_button)
 
+        body_layout.addWidget(card)
         main.addWidget(header)
         main.addWidget(body)
+
+        self.danger_spin.valueChanged.connect(self._update_preview)
+        self.warning_spin.valueChanged.connect(self._update_preview)
 
     @staticmethod
     def _make_spinbox():
@@ -82,16 +148,23 @@ class DistanceSettingWindow(QMainWindow):
         spinbox.setDecimals(1)
         spinbox.setSingleStep(0.5)
         spinbox.setSuffix(" m")
-        spinbox.setFixedWidth(140)
-        spinbox.setStyleSheet("font-size:15px;")
+        spinbox.setFixedWidth(150)
         return spinbox
 
     @staticmethod
-    def _make_row(label_text, widget):
+    def _make_row(title_text, tag_text, widget, color):
         row = QHBoxLayout()
-        label = QLabel(label_text)
-        label.setStyleSheet("color:white; font-size:15px;")
-        row.addWidget(label)
+        row.setSpacing(12)
+
+        label_box = QVBoxLayout()
+        title = QLabel(title_text)
+        title.setFont(QFont("Arial", 14, QFont.Bold))
+        tag = QLabel(tag_text)
+        tag.setStyleSheet(f"color:{color}; font-size:12px; font-weight:700;")
+        label_box.addWidget(title)
+        label_box.addWidget(tag)
+
+        row.addLayout(label_box)
         row.addStretch()
         row.addWidget(widget)
         return row
@@ -100,17 +173,29 @@ class DistanceSettingWindow(QMainWindow):
         thresholds = load_distance_thresholds()
         self.danger_spin.setValue(thresholds["danger"])
         self.warning_spin.setValue(thresholds["warning"])
+        self._update_preview()
+
+    def _update_preview(self):
+        danger = self.danger_spin.value()
+        warning = self.warning_spin.value()
+        if warning <= danger:
+            self.preview.setText("⚠️ ค่าระวังต้องมากกว่าค่าอันตราย")
+            return
+        self.preview.setText(
+            f"ผลลัพธ์ที่จะใช้\n"
+            f"อันตราย: ระยะ ≤ {danger:.1f} m\n"
+            f"ระวัง: {danger:.1f} m < ระยะ ≤ {warning:.1f} m\n"
+            f"ปลอดภัย: ระยะ > {warning:.1f} m"
+        )
 
     def save_values(self):
         danger = self.danger_spin.value()
         warning = self.warning_spin.value()
         if warning <= danger:
-            self.status.setText("Warning distance must be greater than danger distance.")
+            self.status.setText("กรุณาตั้งค่าระวังให้มากกว่าค่าอันตราย")
             return
 
         thresholds = save_distance_thresholds(danger, warning)
-        self.status.setText(
-            f"Saved: Danger <= {thresholds['danger']} m, "
-            f"Warning <= {thresholds['warning']} m, Safe > {thresholds['warning']} m"
-        )
+        self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
+        self.status.setText("บันทึกสำเร็จ ใช้ค่าระยะใหม่แล้ว")
         self.thresholds_saved.emit(thresholds["danger"], thresholds["warning"])
