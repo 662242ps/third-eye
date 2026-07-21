@@ -3,7 +3,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ZONE_DIR = PROJECT_ROOT / "zones"
 ACTIVE_ZONE = ZONE_DIR / "active.txt"
+DEFAULT_ZONE = ZONE_DIR / "default.txt"
 VIEW_W = 1000
 VIEW_H = 600
 
@@ -74,6 +75,8 @@ QPushButton#primaryButton:pressed {
 
 
 class ZoneSettingWindow(QMainWindow):
+    zone_saved = pyqtSignal()
+
     def __init__(self, image_path=None):
         super().__init__()
         self.setWindowTitle("Third Eye - ตั้งค่าโซนตรวจจับ")
@@ -254,7 +257,14 @@ class ZoneSettingWindow(QMainWindow):
                     points.append([int(x_ratio * VIEW_W), int(y_ratio * VIEW_H)])
         except (OSError, ValueError):
             return None
-        return points if len(points) >= 3 else None
+        if len(points) < 3:
+            return None
+        polygon = np.array(points, dtype=np.int32)
+        if len({tuple(point) for point in points}) != len(points):
+            return None
+        if abs(cv2.contourArea(polygon)) < 100.0:
+            return None
+        return points
 
     def load_active_zone(self):
         points = self.read_zone(ACTIVE_ZONE)
@@ -281,7 +291,17 @@ class ZoneSettingWindow(QMainWindow):
         name = self.preset_box.currentText()
         if not name.endswith(".txt"):
             return
-        self.save_file(ZONE_DIR / name)
+        polygon = np.array(self.zone_points, dtype=np.int32)
+        if (
+            len({tuple(point) for point in self.zone_points}) != len(self.zone_points)
+            or abs(cv2.contourArea(polygon)) < 100.0
+        ):
+            self.status.setStyleSheet("color:#ef4444; font-size:13px; font-weight:700;")
+            self.status.setText("ไม่สามารถบันทึกได้: โซนต้องมีอย่างน้อย 3 จุดและมีพื้นที่")
+            return
+
+        if (ZONE_DIR / name) != DEFAULT_ZONE:
+            self.save_file(ZONE_DIR / name)
         self.save_file(ACTIVE_ZONE)
         self.preset_box.blockSignals(True)
         self.load_presets()
@@ -289,6 +309,7 @@ class ZoneSettingWindow(QMainWindow):
         self.preset_box.blockSignals(False)
         self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
         self.status.setText("บันทึกสำเร็จ ใช้โซนนี้แล้ว")
+        self.zone_saved.emit()
 
 
 if __name__ == "__main__":

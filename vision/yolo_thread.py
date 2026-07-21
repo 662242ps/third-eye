@@ -1,4 +1,6 @@
+import os
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Event, Lock
 
@@ -7,7 +9,11 @@ import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from ultralytics import YOLO
 
-from vision.distance_config import load_distance_thresholds
+from vision.distance_config import DISTANCE_SETTINGS_FILE, load_distance_thresholds
+
+# Resizing/drawing is lightweight here. Let Torch own the CPU worker pool instead
+# of allowing OpenCV and Torch to oversubscribe the same cores.
+cv2.setNumThreads(1)
 
 try:
     import torch
@@ -18,6 +24,7 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_FILE = PROJECT_ROOT / "models" / "best.pt"
 ZONE_FILE = PROJECT_ROOT / "zones" / "active.txt"
+FILE_CHECK_INTERVAL_S = 0.75
 
 # Camera/distance calibration
 # FOCAL_LENGTH should be calibrated with a known object distance for best accuracy.
@@ -29,6 +36,12 @@ REAL_HEIGHT = {
     "car": 1.50,
     "truck": 2.80,
     "motorcycle": 1.20,
+    "bus": 3.10,
+}
+
+CLASS_ALIASES = {
+    "motorbike": "motorcycle",
+    "bike": "motorcycle",
 }
 
 # Practical confidence thresholds for real webcam/video use.
@@ -38,11 +51,13 @@ CLASS_CONF = {
     "car": 0.70,
     "truck": 0.70,
     "motorcycle": 0.60,
+    "bus": 0.70,
 }
 
+# Keep inference input identical to the square image size used for training.
 MODEL_IMGSZ = 640
 MODEL_IOU = 0.45
-MODEL_MAX_DET = 30
+MODEL_MAX_DET = 20
 
 MIN_BOX_HEIGHT = 14
 SMOOTHING_ALPHA = 0.35
@@ -64,7 +79,8 @@ def _select_device():
 
 
 def _normalize_label(name):
-    return str(name).strip().lower()
+    label = str(name).strip().lower()
+    return CLASS_ALIASES.get(label, label)
 
 
 def _box_iou(box_a, box_b):
@@ -100,8 +116,30 @@ class YoloThread(QThread):
             raise FileNotFoundError(f"Model file not found: {MODEL_FILE}")
 
         self.device = _select_device()
+        self.use_half = self.device == "cuda"
+        if torch is not None:
+            torch.set_grad_enabled(False)
+            if self.use_half:
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            else:
+                cpu_threads = max(1, min(8, os.cpu_count() or 2))
+                torch.set_num_threads(cpu_threads)
+                try:
+                    torch.set_num_interop_threads(1)
+                except RuntimeError:
+                    pass
+                if hasattr(torch.backends, "mkldnn"):
+                    torch.backends.mkldnn.enabled = True
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
         self.model = YOLO(str(MODEL_FILE))
         self.model.to(self.device)
+        try:
+            self.model.fuse()
+        except (AttributeError, RuntimeError):
+            pass
         print(f"YOLO device: {self.device}")
         print("MODEL CLASSES:", self.model.names)
 
@@ -114,8 +152,13 @@ class YoloThread(QThread):
 
         self.zone = None
         self.zone_mtime = 0
+        self._zone_last_check = 0.0
         self.last_detections = []
         self._track_memory = []
+        self.inference_fps = 0.0
+        self._thresholds = load_distance_thresholds()
+        self._thresholds_mtime = 0
+        self._thresholds_last_check = 0.0
 
         class_names = (
             self.model.names.items()
@@ -127,18 +170,36 @@ class YoloThread(QThread):
             for class_id, name in class_names
             if _normalize_label(name) in REAL_HEIGHT
         ]
+        self._warm_up()
+
+    def _warm_up(self):
+        """Build the inference graph before the first real camera frame."""
+        try:
+            self.model(
+                np.zeros((MODEL_IMGSZ, MODEL_IMGSZ, 3), dtype=np.uint8),
+                imgsz=MODEL_IMGSZ,
+                classes=self.class_ids or None,
+                half=self.use_half,
+                verbose=False,
+            )
+        except Exception as error:
+            print(f"YOLO warm-up skipped: {error}")
 
     def update_frame(self, frame):
         """Store the newest frame and discard older unprocessed frames."""
         with self._lock:
+            if self._frame_id != self._processed_frame_id:
+                return False
             self._frame = frame.copy()
             self._frame_id += 1
         self._frame_ready.set()
+        return True
 
     def clear_frame(self):
         """Pause inference when no camera/video source is active."""
         with self._lock:
             self._frame = None
+            self._processed_frame_id = self._frame_id
             self.last_detections = []
             self._track_memory = []
         self._frame_ready.set()
@@ -176,12 +237,18 @@ class YoloThread(QThread):
             with self._lock:
                 if self._frame is None or self._frame_id == self._processed_frame_id:
                     continue
-                frame = self._frame.copy()
+                # update_frame already owns a private copy; replacing self._frame
+                # later does not mutate this local ndarray.
+                frame = self._frame
                 self._processed_frame_id = self._frame_id
 
             try:
+                started_at = time.perf_counter()
                 self._update_zone(frame.shape)
-                detections = self._detect(frame)
+                thresholds = self._get_thresholds()
+                detections = self._detect(frame, thresholds)
+                elapsed = max(time.perf_counter() - started_at, 1e-6)
+                self.inference_fps = 1.0 / elapsed
             except Exception as error:
                 self.error_ready.emit(f"YOLO error: {error}")
                 time.sleep(0.1)
@@ -189,9 +256,14 @@ class YoloThread(QThread):
 
             with self._lock:
                 self.last_detections = detections
-            self.result_ready.emit(self._format_result(detections))
+            self.result_ready.emit(self._format_result(detections, thresholds))
 
     def _update_zone(self, shape):
+        now = time.monotonic()
+        if now - self._zone_last_check < FILE_CHECK_INTERVAL_S:
+            return
+        self._zone_last_check = now
+
         try:
             mtime = ZONE_FILE.stat().st_mtime
         except FileNotFoundError:
@@ -208,21 +280,39 @@ class YoloThread(QThread):
                 self.zone = zone
                 self.zone_mtime = mtime
 
-    def _detect(self, frame):
-        thresholds = load_distance_thresholds()
+    def _get_thresholds(self):
+        now = time.monotonic()
+        if now - self._thresholds_last_check < FILE_CHECK_INTERVAL_S:
+            return self._thresholds
+        self._thresholds_last_check = now
+
+        try:
+            mtime = DISTANCE_SETTINGS_FILE.stat().st_mtime_ns
+        except OSError:
+            mtime = 0
+        if mtime != self._thresholds_mtime:
+            self._thresholds = load_distance_thresholds()
+            self._thresholds_mtime = mtime
+        return self._thresholds
+
+    def _detect(self, frame, thresholds):
         danger_dist = thresholds["danger"]
         warning_dist = thresholds["warning"]
 
         min_conf = min(CLASS_CONF.values())
-        results = self.model(
-            frame,
-            conf=min_conf,
-            iou=MODEL_IOU,
-            imgsz=MODEL_IMGSZ,
-            max_det=MODEL_MAX_DET,
-            classes=self.class_ids or None,
-            verbose=False,
-        )
+        inference_context = torch.inference_mode() if torch is not None else nullcontext()
+        with inference_context:
+            results = self.model(
+                frame,
+                conf=min_conf,
+                iou=MODEL_IOU,
+                imgsz=MODEL_IMGSZ,
+                max_det=MODEL_MAX_DET,
+                classes=self.class_ids or None,
+                half=self.use_half,
+                augment=False,
+                verbose=False,
+            )
 
         detections = []
         zone = self.get_zone()
@@ -336,11 +426,10 @@ class YoloThread(QThread):
         return "SAFE"
 
     @staticmethod
-    def _format_result(detections):
+    def _format_result(detections, thresholds):
         if not detections:
             return '<span style="color:#94a3b8;">ไม่พบวัตถุในโซนตรวจจับ</span>'
 
-        thresholds = load_distance_thresholds()
         header = (
             f'<span style="color:#e5e7eb;">'
             f'อันตราย ≤ {thresholds["danger"]} M | '
@@ -362,4 +451,14 @@ class YoloThread(QThread):
     def stop(self):
         self._stop_requested.set()
         self._frame_ready.set()
-        self.wait(3000)
+        return self.wait(10000)
+
+    def update_thresholds(self, danger, warning):
+        """Apply values saved by the UI without waiting for the file poll."""
+        with self._lock:
+            self._thresholds = {"danger": float(danger), "warning": float(warning)}
+        self._thresholds_last_check = time.monotonic()
+
+    def invalidate_zone(self):
+        """Request a zone reload on the next inference frame."""
+        self._zone_last_check = 0.0

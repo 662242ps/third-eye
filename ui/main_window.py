@@ -27,23 +27,27 @@ TEMP_DIR = PROJECT_ROOT / "tmp"
 
 APP_STYLE = """
 QMainWindow {
-    background: #0f172a;
+    background: #0b1120;
 }
 QFrame#header {
-    background: #111827;
-    border-bottom: 1px solid #263143;
+    background: #101827;
+    border-bottom: 1px solid #26364c;
 }
 QFrame#toolbar {
-    background: #0f172a;
-    border-bottom: 1px solid #1f2937;
+    background: #0b1120;
 }
 QFrame#content {
-    background: #0f172a;
+    background: #0b1120;
 }
 QFrame#videoCard, QFrame#alertCard {
-    background: #172033;
-    border: 1px solid #2d3a4f;
-    border-radius: 18px;
+    background: #121d2f;
+    border: 1px solid #2b3a52;
+    border-radius: 16px;
+}
+QFrame#metricCard {
+    background: #101a2b;
+    border: 1px solid #26364c;
+    border-radius: 12px;
 }
 QLabel {
     color: #e5e7eb;
@@ -54,6 +58,10 @@ QPushButton {
     padding: 10px 18px;
     font-size: 15px;
     font-weight: 700;
+}
+QPushButton:disabled {
+    background: #1e293b;
+    color: #64748b;
 }
 QPushButton#successButton {
     background: #16a34a;
@@ -89,7 +97,7 @@ QTextEdit {
     border: 1px solid #243244;
     border-radius: 14px;
     padding: 12px;
-    font-size: 16px;
+    font-size: 14px;
 }
 """
 
@@ -98,13 +106,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Third Eye")
-        self.resize(1440, 850)
+        self.resize(1120, 860)
+        self.setMinimumSize(1080, 840)
         self.setStyleSheet(APP_STYLE)
 
         self.cap = None
         self.current_frame = None
         self.last_time = time.time()
         self.fps = 0.0
+        self.source_name = "No source"
         self.last_info = ""
         self.yolo = None
         self.zone_win = None
@@ -133,7 +143,7 @@ class MainWindow(QMainWindow):
         main.setSpacing(0)
 
         header = QFrame(objectName="header")
-        header.setFixedHeight(88)
+        header.setFixedHeight(72)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(28, 12, 28, 12)
         header_layout.setSpacing(14)
@@ -141,46 +151,27 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
         title = QLabel("Third Eye")
-        title.setFont(QFont("Arial", 24, QFont.Bold))
+        title.setFont(QFont("Arial", 25, QFont.Bold))
         subtitle = QLabel("ระบบตรวจจับวัตถุบนถนน วัดระยะ และแจ้งเตือนความเสี่ยง")
         subtitle.setStyleSheet("color:#94a3b8; font-size:13px;")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
 
-        self.distance_status = QLabel("")
-        self.distance_status.setStyleSheet(
-            "background:#0b1220; color:#cbd5e1; border:1px solid #243244; "
-            "border-radius:12px; padding:8px 12px; font-size:13px;"
-        )
-
         self.status_badge = QLabel("กำลังเริ่มระบบ")
         self.status_badge.setAlignment(Qt.AlignCenter)
-        self.status_badge.setFixedWidth(130)
+        self.status_badge.setFixedWidth(138)
         self.status_badge.setStyleSheet(
             "background:#334155; color:white; border-radius:12px; padding:8px; font-weight:700;"
         )
 
-        self.btn_distance = QPushButton("ตั้งค่าระยะ")
-        self.btn_distance.setObjectName("settingButton")
-        self.btn_distance.setFixedSize(140, 46)
-        self.btn_distance.clicked.connect(self.open_distance_setting)
-
-        self.btn_setting = QPushButton("ตั้งค่าโซน")
-        self.btn_setting.setObjectName("settingButton")
-        self.btn_setting.setFixedSize(130, 46)
-        self.btn_setting.clicked.connect(self.open_zone_setting)
-
         header_layout.addLayout(title_box)
         header_layout.addStretch()
-        header_layout.addWidget(self.distance_status)
         header_layout.addWidget(self.status_badge)
-        header_layout.addWidget(self.btn_distance)
-        header_layout.addWidget(self.btn_setting)
 
         toolbar = QFrame(objectName="toolbar")
-        toolbar.setFixedHeight(92)
+        toolbar.setFixedHeight(66)
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(28, 18, 28, 18)
+        toolbar_layout.setContentsMargins(28, 12, 28, 12)
         toolbar_layout.setSpacing(14)
 
         self.btn_open = QPushButton("เปิดกล้อง")
@@ -189,39 +180,48 @@ class MainWindow(QMainWindow):
         self.btn_close.setObjectName("dangerButton")
         self.btn_video = QPushButton("อัปโหลดวิดีโอ")
         self.btn_video.setObjectName("secondaryButton")
+        self.btn_distance = QPushButton("ตั้งค่าระยะ")
+        self.btn_distance.setObjectName("settingButton")
+        self.btn_setting = QPushButton("ตั้งค่าโซน")
+        self.btn_setting.setObjectName("settingButton")
 
         for button in (self.btn_open, self.btn_close, self.btn_video):
-            button.setFixedSize(180, 50)
+            button.setFixedSize(154, 42)
             toolbar_layout.addWidget(button)
 
         toolbar_layout.addStretch()
+        for button in (self.btn_distance, self.btn_setting):
+            button.setFixedSize(132, 42)
+            toolbar_layout.addWidget(button)
+
         self.btn_open.clicked.connect(self.open_camera)
         self.btn_close.clicked.connect(lambda: self.close_camera())
         self.btn_video.clicked.connect(self.open_video)
+        self.btn_distance.clicked.connect(self.open_distance_setting)
+        self.btn_setting.clicked.connect(self.open_zone_setting)
 
         content = QFrame(objectName="content")
         content_layout = QHBoxLayout(content)
-        content_layout.setContentsMargins(28, 24, 28, 28)
-        content_layout.setSpacing(22)
+        content_layout.setContentsMargins(24, 10, 24, 24)
+        content_layout.setSpacing(18)
 
         video_card = QFrame(objectName="videoCard")
         video_layout = QVBoxLayout(video_card)
         video_layout.setContentsMargins(14, 14, 14, 14)
         video_layout.setSpacing(10)
 
-        video_title = QLabel("มุมมองกล้อง / วิดีโอ")
-        video_title.setFont(QFont("Arial", 14, QFont.Bold))
         self.video = QLabel(alignment=Qt.AlignCenter)
-        self.video.setMinimumSize(900, 560)
+        self.video.setFixedSize(640, 640)
         self.video.setStyleSheet(
             "background:#020617; border:1px solid #334155; border-radius:14px; color:#64748b;"
         )
         self.video.setText("ยังไม่ได้เปิดกล้องหรือวิดีโอ")
-        video_layout.addWidget(video_title)
-        video_layout.addWidget(self.video)
+        video_layout.addStretch()
+        video_layout.addWidget(self.video, alignment=Qt.AlignCenter)
+        video_layout.addStretch()
 
         alert_card = QFrame(objectName="alertCard")
-        alert_card.setFixedWidth(360)
+        alert_card.setFixedWidth(370)
         alert_layout = QVBoxLayout(alert_card)
         alert_layout.setContentsMargins(14, 14, 14, 14)
         alert_layout.setSpacing(10)
@@ -234,6 +234,22 @@ class MainWindow(QMainWindow):
             "<span style='color:#94a3b8;'>เปิดกล้องหรืออัปโหลดวิดีโอเพื่อเริ่มตรวจจับ</span>"
         )
         alert_layout.addWidget(alert_title)
+
+        self.source_metric = self._make_metric("SOURCE", self.source_name)
+        self.fps_metric = self._make_metric("DISPLAY / AI FPS", "--")
+        metrics = QHBoxLayout()
+        metrics.setSpacing(8)
+        metrics.addWidget(self.source_metric)
+        metrics.addWidget(self.fps_metric)
+        alert_layout.addLayout(metrics)
+
+        self.distance_status = QLabel("")
+        self.distance_status.setWordWrap(True)
+        self.distance_status.setStyleSheet(
+            "background:#0b1220; color:#aab9cc; border-radius:10px; "
+            "padding:9px; font-size:12px;"
+        )
+        alert_layout.addWidget(self.distance_status)
         alert_layout.addWidget(self.alert)
 
         content_layout.addWidget(video_card)
@@ -242,6 +258,23 @@ class MainWindow(QMainWindow):
         main.addWidget(header)
         main.addWidget(toolbar)
         main.addWidget(content)
+
+    @staticmethod
+    def _make_metric(title, value):
+        card = QFrame(objectName="metricCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+        label = QLabel(title)
+        label.setStyleSheet("color:#718096; font-size:10px; font-weight:700;")
+        metric_value = QLabel(value)
+        metric_value.setObjectName("metricValue")
+        metric_value.setStyleSheet("color:#e5e7eb; font-size:13px; font-weight:700;")
+        metric_value.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addWidget(metric_value)
+        card.value_label = metric_value
+        return card
 
     def set_status(self, text, color):
         self.status_badge.setText(text)
@@ -268,6 +301,8 @@ class MainWindow(QMainWindow):
             self.set_status("กล้องผิดพลาด", "#ef4444")
             return
         self.last_time = time.time()
+        self.source_name = "Camera 0"
+        self.source_metric.value_label.setText(self.source_name)
         self.timer.start(33)
         self.alert.setText("เปิดกล้องแล้ว")
         self.set_status("กำลังทำงาน", "#16a34a")
@@ -288,6 +323,8 @@ class MainWindow(QMainWindow):
             self.set_status("วิดีโอผิดพลาด", "#ef4444")
             return
         self.last_time = time.time()
+        self.source_name = Path(path).name
+        self.source_metric.value_label.setText(self.source_name)
         self.timer.start(33)
         self.alert.setText("เปิดวิดีโอแล้ว")
         self.set_status("กำลังทำงาน", "#16a34a")
@@ -298,6 +335,9 @@ class MainWindow(QMainWindow):
             self.cap.release()
             self.cap = None
         self.current_frame = None
+        self.source_name = "No source"
+        self.source_metric.value_label.setText(self.source_name)
+        self.fps_metric.value_label.setText("--")
         if self.yolo is not None:
             self.yolo.clear_frame()
         if clear_display:
@@ -316,7 +356,7 @@ class MainWindow(QMainWindow):
             self.alert.setText("วิดีโอจบแล้ว หรือไม่สามารถอ่านเฟรมจากกล้องได้")
             return
 
-        frame = cv2.resize(frame, (800, 600))
+        frame = cv2.resize(frame, (640, 640))
         self.current_frame = frame.copy()
         if self.yolo is not None:
             self.yolo.update_frame(frame)
@@ -345,6 +385,8 @@ class MainWindow(QMainWindow):
         now = time.time()
         self.fps = 1.0 / max(now - self.last_time, 1e-6)
         self.last_time = now
+        ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
+        self.fps_metric.value_label.setText(f"{self.fps:.1f} / {ai_fps:.1f}")
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb_frame.shape
@@ -354,9 +396,7 @@ class MainWindow(QMainWindow):
         self.video.setPixmap(
             QPixmap.fromImage(image).scaled(self.video.size(), Qt.KeepAspectRatio)
         )
-        self.alert.setHtml(
-            f"{self.last_info}<br><span style='color:#cbd5e1;'>FPS: {self.fps:.1f}</span>"
-        )
+        self.alert.setHtml(self.last_info)
 
     def on_yolo_result(self, info):
         self.last_info = info
@@ -372,6 +412,8 @@ class MainWindow(QMainWindow):
 
     def on_thresholds_saved(self, danger, warning):
         self.update_distance_status()
+        if self.yolo is not None:
+            self.yolo.update_thresholds(danger, warning)
         self.last_info = (
             f"<span style='color:#e5e7eb;'>บันทึกระยะแล้ว: "
             f"อันตราย ≤ {danger} M, ระวัง ≤ {warning} M</span>"
@@ -385,10 +427,16 @@ class MainWindow(QMainWindow):
             cv2.imwrite(str(image_path), self.current_frame)
 
         self.zone_win = ZoneSettingWindow(str(image_path) if image_path else None)
+        if self.yolo is not None:
+            self.zone_win.zone_saved.connect(self.yolo.invalidate_zone)
         self.zone_win.show()
 
     def closeEvent(self, event):
         self.close_camera()
         if self.yolo is not None and self.yolo.isRunning():
-            self.yolo.stop()
+            if not self.yolo.stop():
+                self.alert.setText("กำลังรอให้ระบบตรวจจับหยุดทำงาน...")
+                event.ignore()
+                QTimer.singleShot(250, self.close)
+                return
         event.accept()

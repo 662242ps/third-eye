@@ -42,9 +42,22 @@ def load_distance_thresholds():
         with DISTANCE_SETTINGS_FILE.open("r", encoding="utf-8") as file:
             data = json.load(file)
     except (OSError, json.JSONDecodeError):
+        try:
+            save_distance_thresholds(
+                DEFAULT_THRESHOLDS["danger"],
+                DEFAULT_THRESHOLDS["warning"],
+            )
+        except OSError:
+            pass
         return DEFAULT_THRESHOLDS.copy()
 
-    return _normalize_thresholds(data)
+    thresholds = _normalize_thresholds(data)
+    if thresholds != data:
+        try:
+            save_distance_thresholds(thresholds["danger"], thresholds["warning"])
+        except OSError:
+            pass
+    return thresholds
 
 
 def save_distance_thresholds(danger, warning):
