@@ -33,7 +33,13 @@ The values are saved in `settings/distance_thresholds.json` and are reloaded dur
 - Configure the polygon in **Zone Setting**. The active zone is saved in `zones/active.txt`.
 - Camera index and focal-length calibration are available from the gear menu
   under **Camera Setting** and saved in `settings/camera_settings.json`.
-- Use **Test รูปภาพ** to upload a still image. Test mode detects across the
-  entire image without applying the active zone, while retaining estimated
-  distance and risk labels.
+- Use **Test หลายภาพ** to select one or more still images. Test mode processes
+  every image across the full frame without applying the active zone, while
+  retaining estimated distance and risk labels.
+- After a batch finishes, use **บันทึกผล** to export annotated JPEG images and
+  a UTF-8 `detection_results.csv` summary.
+- Browse processed images with the previous/next buttons or the mouse wheel
+  while the pointer is over the image.
+- Uploaded videos show a timeline with current/duration time. Drag the slider
+  to seek to another point in the clip.
 - Reported distances are estimates. Calibrate `FOCAL_LENGTH` in `vision/yolo_thread.py` against the camera used in deployment.
