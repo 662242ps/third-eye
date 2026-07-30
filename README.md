@@ -18,7 +18,7 @@ python main.py
 
 ## Distance warning setting
 
-Click **Distance Setting** in the main window to adjust the distance thresholds in meters.
+Open the gear menu and choose **Distance Setting** to adjust the distance thresholds in meters.
 
 Default values:
 
@@ -31,4 +31,9 @@ The values are saved in `settings/distance_thresholds.json` and are reloaded dur
 ## Notes
 
 - Configure the polygon in **Zone Setting**. The active zone is saved in `zones/active.txt`.
+- Camera index and focal-length calibration are available from the gear menu
+  under **Camera Setting** and saved in `settings/camera_settings.json`.
+- Use **Test รูปภาพ** to upload a still image. Test mode detects across the
+  entire image without applying the active zone, while retaining estimated
+  distance and risk labels.
 - Reported distances are estimates. Calibrate `FOCAL_LENGTH` in `vision/yolo_thread.py` against the camera used in deployment.

@@ -199,3 +199,4 @@ class DistanceSettingWindow(QMainWindow):
         self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
         self.status.setText("บันทึกสำเร็จ ใช้ค่าระยะใหม่แล้ว")
         self.thresholds_saved.emit(thresholds["danger"], thresholds["warning"])
+        self.close()
