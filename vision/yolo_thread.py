@@ -9,6 +9,7 @@ import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from ultralytics import YOLO
 
+from vision.camera_config import load_camera_settings
 from vision.distance_config import DISTANCE_SETTINGS_FILE, load_distance_thresholds
 
 # Resizing/drawing is lightweight here. Let Torch own the CPU worker pool instead
@@ -25,10 +26,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_FILE = PROJECT_ROOT / "models" / "best.pt"
 ZONE_FILE = PROJECT_ROOT / "zones" / "active.txt"
 FILE_CHECK_INTERVAL_S = 0.75
-
-# Camera/distance calibration
-# FOCAL_LENGTH should be calibrated with a known object distance for best accuracy.
-FOCAL_LENGTH = 800
 
 # Approximate real-world object heights in meters.
 REAL_HEIGHT = {
@@ -147,6 +144,7 @@ class YoloThread(QThread):
         self._frame_ready = Event()
         self._lock = Lock()
         self._frame = None
+        self._frame_uses_zone = True
         self._frame_id = 0
         self._processed_frame_id = 0
 
@@ -157,6 +155,7 @@ class YoloThread(QThread):
         self._track_memory = []
         self.inference_fps = 0.0
         self._thresholds = load_distance_thresholds()
+        self._focal_length = load_camera_settings()["focal_length"]
         self._thresholds_mtime = 0
         self._thresholds_last_check = 0.0
 
@@ -185,12 +184,13 @@ class YoloThread(QThread):
         except Exception as error:
             print(f"YOLO warm-up skipped: {error}")
 
-    def update_frame(self, frame):
+    def update_frame(self, frame, use_zone=True):
         """Store the newest frame and discard older unprocessed frames."""
         with self._lock:
             if self._frame_id != self._processed_frame_id:
                 return False
             self._frame = frame.copy()
+            self._frame_uses_zone = bool(use_zone)
             self._frame_id += 1
         self._frame_ready.set()
         return True
@@ -240,13 +240,15 @@ class YoloThread(QThread):
                 # update_frame already owns a private copy; replacing self._frame
                 # later does not mutate this local ndarray.
                 frame = self._frame
+                use_zone = self._frame_uses_zone
                 self._processed_frame_id = self._frame_id
 
             try:
                 started_at = time.perf_counter()
-                self._update_zone(frame.shape)
+                if use_zone:
+                    self._update_zone(frame.shape)
                 thresholds = self._get_thresholds()
-                detections = self._detect(frame, thresholds)
+                detections = self._detect(frame, thresholds, use_zone=use_zone)
                 elapsed = max(time.perf_counter() - started_at, 1e-6)
                 self.inference_fps = 1.0 / elapsed
             except Exception as error:
@@ -256,7 +258,9 @@ class YoloThread(QThread):
 
             with self._lock:
                 self.last_detections = detections
-            self.result_ready.emit(self._format_result(detections, thresholds))
+            self.result_ready.emit(
+                self._format_result(detections, thresholds, use_zone=use_zone)
+            )
 
     def _update_zone(self, shape):
         now = time.monotonic()
@@ -295,7 +299,7 @@ class YoloThread(QThread):
             self._thresholds_mtime = mtime
         return self._thresholds
 
-    def _detect(self, frame, thresholds):
+    def _detect(self, frame, thresholds, use_zone=True):
         danger_dist = thresholds["danger"]
         warning_dist = thresholds["warning"]
 
@@ -315,7 +319,7 @@ class YoloThread(QThread):
             )
 
         detections = []
-        zone = self.get_zone()
+        zone = self.get_zone() if use_zone else None
 
         for result in results:
             for box in result.boxes:
@@ -334,7 +338,9 @@ class YoloThread(QThread):
                 if zone is not None and cv2.pointPolygonTest(zone, bottom_center, False) < 0:
                     continue
 
-                raw_distance = (REAL_HEIGHT[label] * FOCAL_LENGTH) / box_height
+                raw_distance = (
+                    REAL_HEIGHT[label] * self._focal_length
+                ) / box_height
                 detection = {
                     "box": (x1, y1, x2, y2),
                     "label": label,
@@ -426,7 +432,9 @@ class YoloThread(QThread):
         return "SAFE"
 
     @staticmethod
-    def _format_result(detections, thresholds):
+    def _format_result(detections, thresholds, use_zone=True):
+        if not detections and not use_zone:
+            return '<span style="color:#94a3b8;">ไม่พบวัตถุในภาพ</span>'
         if not detections:
             return '<span style="color:#94a3b8;">ไม่พบวัตถุในโซนตรวจจับ</span>'
 
@@ -458,6 +466,12 @@ class YoloThread(QThread):
         with self._lock:
             self._thresholds = {"danger": float(danger), "warning": float(warning)}
         self._thresholds_last_check = time.monotonic()
+
+    def update_camera_settings(self, focal_length):
+        """Apply camera calibration without restarting the detection thread."""
+        with self._lock:
+            self._focal_length = float(focal_length)
+            self._track_memory = []
 
     def invalidate_zone(self):
         """Request a zone reload on the next inference frame."""

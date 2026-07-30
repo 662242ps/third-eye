@@ -310,6 +310,7 @@ class ZoneSettingWindow(QMainWindow):
         self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
         self.status.setText("บันทึกสำเร็จ ใช้โซนนี้แล้ว")
         self.zone_saved.emit()
+        self.close()
 
 
 if __name__ == "__main__":

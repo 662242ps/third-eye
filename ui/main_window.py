@@ -1,7 +1,9 @@
+import csv
 import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QImage, QPixmap
 from PyQt5.QtWidgets import (
@@ -10,14 +12,19 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
+    QSlider,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from ui.camera_setting_window import CameraSettingWindow
 from ui.distance_setting_window import DistanceSettingWindow
 from ui.zone_setting_window import ZoneSettingWindow
+from vision.camera_config import load_camera_settings
 from vision.distance_config import load_distance_thresholds
 from vision.yolo_thread import YoloThread
 
@@ -91,6 +98,35 @@ QPushButton#settingButton {
 QPushButton#settingButton:hover {
     background: #1d4ed8;
 }
+QMenu {
+    background: #172033;
+    color: #f8fafc;
+    border: 1px solid #334155;
+    padding: 6px;
+}
+QMenu::item {
+    border-radius: 7px;
+    padding: 9px 28px 9px 12px;
+}
+QMenu::item:selected {
+    background: #2563eb;
+}
+QSlider::groove:horizontal {
+    height: 6px;
+    background: #334155;
+    border-radius: 3px;
+}
+QSlider::sub-page:horizontal {
+    background: #2563eb;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #f8fafc;
+    border: 2px solid #2563eb;
+    width: 16px;
+    margin: -6px 0;
+    border-radius: 9px;
+}
 QTextEdit {
     background: #020617;
     color: #facc15;
@@ -106,8 +142,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Third Eye")
-        self.resize(1120, 860)
-        self.setMinimumSize(1080, 840)
+        self.resize(1120, 720)
+        self.setMinimumSize(960, 640)
         self.setStyleSheet(APP_STYLE)
 
         self.cap = None
@@ -119,6 +155,17 @@ class MainWindow(QMainWindow):
         self.yolo = None
         self.zone_win = None
         self.distance_win = None
+        self.camera_win = None
+        self.test_frame = None
+        self.test_mode = False
+        self.test_queue = []
+        self.test_index = 0
+        self.test_results = []
+        self.test_view_index = -1
+        self.video_is_file = False
+        self.video_total_frames = 0
+        self.video_fps = 0.0
+        self.video_slider_dragging = False
 
         self._build_ui()
         self.timer = QTimer(self)
@@ -143,17 +190,23 @@ class MainWindow(QMainWindow):
         main.setSpacing(0)
 
         header = QFrame(objectName="header")
-        header.setFixedHeight(72)
+        header.setFixedHeight(84)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(28, 12, 28, 12)
+        header_layout.setContentsMargins(28, 7, 28, 7)
         header_layout.setSpacing(14)
 
         title_box = QVBoxLayout()
-        title_box.setSpacing(2)
+        title_box.setSpacing(0)
         title = QLabel("Third Eye")
         title.setFont(QFont("Arial", 25, QFont.Bold))
+        title.setMinimumHeight(43)
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         subtitle = QLabel("ระบบตรวจจับวัตถุบนถนน วัดระยะ และแจ้งเตือนความเสี่ยง")
-        subtitle.setStyleSheet("color:#94a3b8; font-size:13px;")
+        subtitle.setMinimumHeight(24)
+        subtitle.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        subtitle.setStyleSheet(
+            "color:#94a3b8; font-family:'Leelawadee UI'; font-size:13px;"
+        )
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
 
@@ -180,25 +233,39 @@ class MainWindow(QMainWindow):
         self.btn_close.setObjectName("dangerButton")
         self.btn_video = QPushButton("อัปโหลดวิดีโอ")
         self.btn_video.setObjectName("secondaryButton")
-        self.btn_distance = QPushButton("ตั้งค่าระยะ")
-        self.btn_distance.setObjectName("settingButton")
-        self.btn_setting = QPushButton("ตั้งค่าโซน")
-        self.btn_setting.setObjectName("settingButton")
+        self.btn_test = QPushButton("Test หลายภาพ")
+        self.btn_test.setObjectName("secondaryButton")
+        self.btn_save_results = QPushButton("บันทึกผล")
+        self.btn_save_results.setObjectName("secondaryButton")
+        self.btn_save_results.setEnabled(False)
+        self.btn_settings = QPushButton("ตั้งค่า")
+        self.btn_settings.setObjectName("settingButton")
+        self.btn_settings.setToolTip("การตั้งค่า")
+        self.btn_settings.setFont(QFont("Arial", 15, QFont.Bold))
 
-        for button in (self.btn_open, self.btn_close, self.btn_video):
-            button.setFixedSize(154, 42)
+        for button in (self.btn_open, self.btn_close, self.btn_video, self.btn_test):
+            button.setFixedSize(142, 42)
             toolbar_layout.addWidget(button)
+        self.btn_save_results.setFixedSize(130, 42)
+        toolbar_layout.addWidget(self.btn_save_results)
 
         toolbar_layout.addStretch()
-        for button in (self.btn_distance, self.btn_setting):
-            button.setFixedSize(132, 42)
-            toolbar_layout.addWidget(button)
+        self.btn_settings.setFixedSize(120, 42)
+        toolbar_layout.addWidget(self.btn_settings)
 
         self.btn_open.clicked.connect(self.open_camera)
         self.btn_close.clicked.connect(lambda: self.close_camera())
         self.btn_video.clicked.connect(self.open_video)
-        self.btn_distance.clicked.connect(self.open_distance_setting)
-        self.btn_setting.clicked.connect(self.open_zone_setting)
+        self.btn_test.clicked.connect(self.open_test_image)
+        self.btn_save_results.clicked.connect(self.save_test_results)
+        settings_menu = QMenu(self)
+        distance_action = settings_menu.addAction("ตั้งค่าระยะ")
+        zone_action = settings_menu.addAction("ตั้งค่าโซน")
+        camera_action = settings_menu.addAction("ตั้งค่ากล้อง")
+        distance_action.triggered.connect(self.open_distance_setting)
+        zone_action.triggered.connect(self.open_zone_setting)
+        camera_action.triggered.connect(self.open_camera_setting)
+        self.btn_settings.setMenu(settings_menu)
 
         content = QFrame(objectName="content")
         content_layout = QHBoxLayout(content)
@@ -211,17 +278,63 @@ class MainWindow(QMainWindow):
         video_layout.setSpacing(10)
 
         self.video = QLabel(alignment=Qt.AlignCenter)
-        self.video.setFixedSize(640, 640)
+        self.video.setMinimumSize(480, 380)
+        self.video.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video.setStyleSheet(
             "background:#020617; border:1px solid #334155; border-radius:14px; color:#64748b;"
         )
         self.video.setText("ยังไม่ได้เปิดกล้องหรือวิดีโอ")
-        video_layout.addStretch()
-        video_layout.addWidget(self.video, alignment=Qt.AlignCenter)
-        video_layout.addStretch()
+        self.video.wheelEvent = self._on_test_wheel
+        video_layout.addWidget(self.video)
+
+        self.test_navigation_widget = QWidget()
+        test_navigation = QHBoxLayout(self.test_navigation_widget)
+        test_navigation.setContentsMargins(0, 0, 0, 0)
+        test_navigation.setSpacing(10)
+        self.btn_previous_image = QPushButton("◀ ภาพก่อนหน้า")
+        self.btn_previous_image.setObjectName("secondaryButton")
+        self.btn_next_image = QPushButton("ภาพถัดไป ▶")
+        self.btn_next_image.setObjectName("secondaryButton")
+        self.test_image_counter = QLabel("ยังไม่มีผลภาพ")
+        self.test_image_counter.setAlignment(Qt.AlignCenter)
+        self.test_image_counter.setStyleSheet(
+            "color:#94a3b8; font-size:13px; font-weight:700;"
+        )
+        self.btn_previous_image.setEnabled(False)
+        self.btn_next_image.setEnabled(False)
+        self.btn_previous_image.clicked.connect(self.show_previous_test_result)
+        self.btn_next_image.clicked.connect(self.show_next_test_result)
+        test_navigation.addWidget(self.btn_previous_image)
+        test_navigation.addStretch()
+        test_navigation.addWidget(self.test_image_counter)
+        test_navigation.addStretch()
+        test_navigation.addWidget(self.btn_next_image)
+        self.test_navigation_widget.setVisible(False)
+        video_layout.addWidget(self.test_navigation_widget)
+
+        self.video_timeline_widget = QWidget()
+        video_timeline = QHBoxLayout(self.video_timeline_widget)
+        video_timeline.setContentsMargins(0, 0, 0, 0)
+        video_timeline.setSpacing(10)
+        self.video_time_label = QLabel("00:00 / 00:00")
+        self.video_time_label.setMinimumWidth(105)
+        self.video_time_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.video_time_label.setStyleSheet(
+            "color:#cbd5e1; font-size:12px; font-weight:700;"
+        )
+        self.video_slider = QSlider(Qt.Horizontal)
+        self.video_slider.setRange(0, 0)
+        self.video_slider.sliderPressed.connect(self._on_video_slider_pressed)
+        self.video_slider.sliderReleased.connect(self._on_video_slider_released)
+        self.video_slider.valueChanged.connect(self._preview_video_slider_time)
+        video_timeline.addWidget(self.video_slider)
+        video_timeline.addWidget(self.video_time_label)
+        self.video_timeline_widget.setVisible(False)
+        video_layout.addWidget(self.video_timeline_widget)
 
         alert_card = QFrame(objectName="alertCard")
-        alert_card.setFixedWidth(370)
+        alert_card.setMinimumWidth(320)
+        alert_card.setMaximumWidth(370)
         alert_layout = QVBoxLayout(alert_card)
         alert_layout.setContentsMargins(14, 14, 14, 14)
         alert_layout.setSpacing(10)
@@ -293,7 +406,13 @@ class MainWindow(QMainWindow):
     def open_camera(self):
         if self.cap is not None:
             return
-        self.cap = cv2.VideoCapture(0)
+        self.test_mode = False
+        self.test_frame = None
+        self.video_is_file = False
+        self.test_navigation_widget.setVisible(False)
+        self.video_timeline_widget.setVisible(False)
+        camera_index = load_camera_settings()["camera_index"]
+        self.cap = cv2.VideoCapture(camera_index)
         if not self.cap.isOpened():
             self.cap.release()
             self.cap = None
@@ -301,7 +420,7 @@ class MainWindow(QMainWindow):
             self.set_status("กล้องผิดพลาด", "#ef4444")
             return
         self.last_time = time.time()
-        self.source_name = "Camera 0"
+        self.source_name = f"Camera {camera_index}"
         self.source_metric.value_label.setText(self.source_name)
         self.timer.start(33)
         self.alert.setText("เปิดกล้องแล้ว")
@@ -315,6 +434,8 @@ class MainWindow(QMainWindow):
             return
 
         self.close_camera(clear_display=False)
+        self.test_mode = False
+        self.test_frame = None
         self.cap = cv2.VideoCapture(path)
         if not self.cap.isOpened():
             self.cap.release()
@@ -322,6 +443,21 @@ class MainWindow(QMainWindow):
             self.alert.setText("ไม่สามารถเปิดวิดีโอได้")
             self.set_status("วิดีโอผิดพลาด", "#ef4444")
             return
+        self.video_is_file = True
+        self.video_total_frames = max(
+            0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        )
+        self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if self.video_fps <= 0:
+            self.video_fps = 30.0
+        self.video_slider.setRange(0, max(0, self.video_total_frames - 1))
+        self.video_slider.setValue(0)
+        self.video_time_label.setText(
+            f"00:00 / "
+            f"{self._format_video_time(self.video_total_frames / self.video_fps)}"
+        )
+        self.test_navigation_widget.setVisible(False)
+        self.video_timeline_widget.setVisible(True)
         self.last_time = time.time()
         self.source_name = Path(path).name
         self.source_metric.value_label.setText(self.source_name)
@@ -329,8 +465,287 @@ class MainWindow(QMainWindow):
         self.alert.setText("เปิดวิดีโอแล้ว")
         self.set_status("กำลังทำงาน", "#16a34a")
 
+    @staticmethod
+    def _format_video_time(seconds):
+        seconds = max(0, int(seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
+    def _on_video_slider_pressed(self):
+        if not self.video_is_file:
+            return
+        self.video_slider_dragging = True
+        self.timer.stop()
+
+    def _preview_video_slider_time(self, frame_number):
+        if not self.video_is_file or self.video_fps <= 0:
+            return
+        current = self._format_video_time(frame_number / self.video_fps)
+        duration = self._format_video_time(
+            self.video_total_frames / self.video_fps
+        )
+        self.video_time_label.setText(f"{current} / {duration}")
+
+    def _on_video_slider_released(self):
+        if not self.video_is_file or self.cap is None:
+            return
+        frame_number = self.video_slider.value()
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        if self.yolo is not None:
+            self.yolo.clear_frame()
+        self.video_slider_dragging = False
+        self.last_time = time.time()
+        self.update_frame()
+        if self.cap is not None:
+            self.timer.start(33)
+
+    def open_test_image(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "เลือกภาพสำหรับ Test (เลือกได้หลายภาพ)",
+            "",
+            "Image Files (*.jpg *.jpeg *.png *.bmp *.webp *.tif *.tiff)",
+        )
+        if not paths:
+            return
+
+        self.close_camera(clear_display=False)
+        self.test_mode = True
+        self.test_queue = list(paths)
+        self.test_index = 0
+        self.test_results = []
+        self.test_view_index = -1
+        self.btn_save_results.setEnabled(False)
+        self.test_navigation_widget.setVisible(True)
+        self.video_timeline_widget.setVisible(False)
+        self._update_test_navigation()
+
+        if self.yolo is None:
+            self.alert.setText("โมเดลยังไม่พร้อมใช้งาน")
+            self.set_status("โมเดลไม่พร้อม", "#ef4444")
+            return
+        self._load_next_test_image()
+
+    def _load_next_test_image(self):
+        if not self.test_mode:
+            return
+        while self.test_mode and self.test_index < len(self.test_queue):
+            path = self.test_queue[self.test_index]
+            image = cv2.imdecode(
+                np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+            if image is None:
+                self.test_results.append(
+                    {
+                        "path": path,
+                        "detections": [],
+                        "image": None,
+                        "error": True,
+                        "info": (
+                            "<span style='color:#ef4444;'>"
+                            "ไม่สามารถเปิดไฟล์ภาพนี้ได้</span>"
+                        ),
+                    }
+                )
+                self.test_index += 1
+                continue
+
+            self.test_frame = cv2.resize(image, (640, 640))
+            self.current_frame = self.test_frame.copy()
+            self.source_name = Path(path).name
+            self.source_metric.value_label.setText(
+                f"{self.source_name} ({self.test_index + 1}/{len(self.test_queue)})"
+            )
+            self.fps_metric.value_label.setText("กำลังตรวจจับ...")
+            self.last_info = (
+                f"<span style='color:#94a3b8;'>กำลังตรวจภาพ "
+                f"{self.test_index + 1} จาก {len(self.test_queue)} "
+                "โดยไม่ใช้โซน...</span>"
+            )
+            self.alert.setHtml(self.last_info)
+            self._display_frame(
+                self.test_frame.copy(),
+                draw_zone=False,
+                show_detections=False,
+            )
+            self.set_status("กำลัง Test หลายภาพ", "#2563eb")
+            self._submit_test_frame()
+            return
+
+        if self.test_mode:
+            self._finish_test_batch()
+
+    def _submit_test_frame(self):
+        if self.test_mode and self.test_frame is not None and self.yolo is not None:
+            if not self.yolo.update_frame(self.test_frame, use_zone=False):
+                QTimer.singleShot(50, self._submit_test_frame)
+
+    def _finish_test_batch(self):
+        self.test_mode = False
+        self.test_frame = None
+        self.btn_save_results.setEnabled(bool(self.test_results))
+        detected = sum(len(item["detections"]) for item in self.test_results)
+        failed = sum(bool(item.get("error")) for item in self.test_results)
+        self.alert.setHtml(
+            f"<span style='color:#22c55e;'>Test ครบ {len(self.test_results)} ภาพ "
+            f"พบวัตถุรวม {detected} รายการ</span>"
+            + (
+                f"<br><span style='color:#ef4444;'>เปิดภาพไม่สำเร็จ {failed} ภาพ</span>"
+                if failed
+                else ""
+            )
+        )
+        self.fps_metric.value_label.setText("เสร็จแล้ว")
+        self.set_status("Test เสร็จแล้ว", "#22c55e")
+        if self.test_results:
+            self.show_test_result(len(self.test_results) - 1)
+        else:
+            self._update_test_navigation()
+
+    def show_test_result(self, index):
+        if not self.test_results:
+            return
+        self.test_view_index = max(0, min(index, len(self.test_results) - 1))
+        item = self.test_results[self.test_view_index]
+        self.source_name = Path(item["path"]).name
+        self.source_metric.value_label.setText(self.source_name)
+        if item["image"] is not None:
+            self._display_frame(
+                item["image"].copy(),
+                draw_zone=False,
+                show_detections=False,
+            )
+        else:
+            self.video.clear()
+            self.video.setText("ไม่สามารถแสดงภาพนี้ได้")
+        self.alert.setHtml(
+            item.get(
+                "info",
+                "<span style='color:#ef4444;'>ไม่สามารถประมวลผลภาพนี้ได้</span>",
+            )
+        )
+        self._update_test_navigation()
+
+    def show_previous_test_result(self):
+        if self.test_results:
+            self.show_test_result(self.test_view_index - 1)
+
+    def show_next_test_result(self):
+        if self.test_results:
+            self.show_test_result(self.test_view_index + 1)
+
+    def _on_test_wheel(self, event):
+        if not self.test_results or self.test_mode:
+            event.ignore()
+            return
+        if event.angleDelta().y() > 0:
+            self.show_previous_test_result()
+        elif event.angleDelta().y() < 0:
+            self.show_next_test_result()
+        event.accept()
+
+    def _update_test_navigation(self):
+        total = len(self.test_results)
+        if total == 0:
+            self.test_image_counter.setText("ยังไม่มีผลภาพ")
+            self.btn_previous_image.setEnabled(False)
+            self.btn_next_image.setEnabled(False)
+            return
+        current = max(0, self.test_view_index)
+        self.test_image_counter.setText(f"ภาพ {current + 1} / {total}")
+        navigation_enabled = not self.test_mode
+        self.btn_previous_image.setEnabled(navigation_enabled and current > 0)
+        self.btn_next_image.setEnabled(
+            navigation_enabled and current < total - 1
+        )
+
+    def save_test_results(self):
+        if not self.test_results:
+            return
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "เลือกโฟลเดอร์สำหรับบันทึกผล"
+        )
+        if not output_dir:
+            return
+
+        output_path = Path(output_dir)
+        csv_path = output_path / "detection_results.csv"
+        with csv_path.open("w", newline="", encoding="utf-8-sig") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    "image",
+                    "object_no",
+                    "label",
+                    "distance_m",
+                    "status",
+                    "confidence",
+                    "box",
+                    "error",
+                ]
+            )
+            for result_index, item in enumerate(self.test_results, 1):
+                image_name = Path(item["path"]).name
+                detections = item["detections"]
+                if item["image"] is not None:
+                    result_name = (
+                        f"{result_index:03d}_{Path(image_name).stem}_detected.jpg"
+                    )
+                    encoded_ok, encoded = cv2.imencode(".jpg", item["image"])
+                    if encoded_ok:
+                        encoded.tofile(str(output_path / result_name))
+                if not detections:
+                    writer.writerow(
+                        [
+                            image_name,
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "read/inference error" if item.get("error") else "",
+                        ]
+                    )
+                    continue
+                for index, detection in enumerate(detections, 1):
+                    writer.writerow(
+                        [
+                            image_name,
+                            index,
+                            detection["label"],
+                            detection["dist"],
+                            detection["status"],
+                            detection["score"],
+                            detection["box"],
+                            "",
+                        ]
+                    )
+
+        self.alert.setHtml(
+            f"<span style='color:#22c55e;'>บันทึกภาพผลลัพธ์และไฟล์ "
+            f"detection_results.csv ที่ {output_path}</span>"
+        )
+
     def close_camera(self, clear_display=True):
         self.timer.stop()
+        self.test_mode = False
+        self.test_frame = None
+        self.test_queue = []
+        self.test_index = 0
+        self.test_results = []
+        self.test_view_index = -1
+        self.btn_save_results.setEnabled(False)
+        self._update_test_navigation()
+        self.test_navigation_widget.setVisible(False)
+        self.video_timeline_widget.setVisible(False)
+        self.video_is_file = False
+        self.video_total_frames = 0
+        self.video_fps = 0.0
+        self.video_slider_dragging = False
         if self.cap is not None:
             self.cap.release()
             self.cap = None
@@ -352,16 +767,42 @@ class MainWindow(QMainWindow):
 
         ret, frame = self.cap.read()
         if not ret:
+            if self.video_is_file:
+                self.timer.stop()
+                self.video_slider.setValue(
+                    max(0, self.video_total_frames - 1)
+                )
+                self.alert.setText(
+                    "วิดีโอจบแล้ว สามารถลากแถบเวลาเพื่อดูช่วงอื่นได้"
+                )
+                self.set_status("วิดีโอจบแล้ว", "#2563eb")
+                return
             self.close_camera()
-            self.alert.setText("วิดีโอจบแล้ว หรือไม่สามารถอ่านเฟรมจากกล้องได้")
+            self.alert.setText("ไม่สามารถอ่านเฟรมจากกล้องได้")
             return
 
         frame = cv2.resize(frame, (640, 640))
         self.current_frame = frame.copy()
+        if self.video_is_file and not self.video_slider_dragging:
+            current_frame = max(
+                0, int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+            )
+            self.video_slider.blockSignals(True)
+            self.video_slider.setValue(current_frame)
+            self.video_slider.blockSignals(False)
+            self._preview_video_slider_time(current_frame)
         if self.yolo is not None:
             self.yolo.update_frame(frame)
 
-        for detection in self.yolo.get_detections() if self.yolo else []:
+        self._display_frame(frame, draw_zone=True)
+
+    def _display_frame(self, frame, draw_zone, show_detections=True):
+        detections = (
+            self.yolo.get_detections()
+            if show_detections and self.yolo
+            else []
+        )
+        for detection in detections:
             x1, y1, x2, y2 = detection["box"]
             color = detection["color"]
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -375,18 +816,12 @@ class MainWindow(QMainWindow):
                 2,
             )
 
-        zone = self.yolo.get_zone() if self.yolo else None
+        zone = self.yolo.get_zone() if draw_zone and self.yolo else None
         if zone is not None:
             overlay = frame.copy()
             cv2.fillPoly(overlay, [zone], (30, 80, 180))
             frame = cv2.addWeighted(overlay, 0.18, frame, 0.82, 0)
             cv2.polylines(frame, [zone], True, (56, 189, 248), 2)
-
-        now = time.time()
-        self.fps = 1.0 / max(now - self.last_time, 1e-6)
-        self.last_time = now
-        ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
-        self.fps_metric.value_label.setText(f"{self.fps:.1f} / {ai_fps:.1f}")
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb_frame.shape
@@ -396,19 +831,77 @@ class MainWindow(QMainWindow):
         self.video.setPixmap(
             QPixmap.fromImage(image).scaled(self.video.size(), Qt.KeepAspectRatio)
         )
-        self.alert.setHtml(self.last_info)
+        if draw_zone:
+            now = time.time()
+            self.fps = 1.0 / max(now - self.last_time, 1e-6)
+            self.last_time = now
+            ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
+            self.fps_metric.value_label.setText(f"{self.fps:.1f} / {ai_fps:.1f}")
+            self.alert.setHtml(self.last_info)
+        return frame
 
     def on_yolo_result(self, info):
         self.last_info = info
+        if self.test_mode and self.test_frame is not None:
+            annotated = self._display_frame(
+                self.test_frame.copy(), draw_zone=False
+            )
+            detections = (
+                self.yolo.get_detections() if self.yolo is not None else []
+            )
+            self.test_results.append(
+                {
+                    "path": self.test_queue[self.test_index],
+                    "detections": detections,
+                    "image": annotated,
+                    "error": False,
+                    "info": info,
+                }
+            )
+            self.alert.setHtml(info)
+            ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
+            self.fps_metric.value_label.setText(f"AI {ai_fps:.1f} FPS")
+            self.test_index += 1
+            QTimer.singleShot(50, self._load_next_test_image)
 
     def on_yolo_error(self, message):
         self.last_info = f"<span style='color:#ef4444;'>{message}</span>"
+        if self.test_mode:
+            self.alert.setHtml(self.last_info)
+            if self.test_index < len(self.test_queue):
+                self.test_results.append(
+                    {
+                        "path": self.test_queue[self.test_index],
+                        "detections": [],
+                        "image": self.test_frame.copy()
+                        if self.test_frame is not None
+                        else None,
+                        "error": True,
+                        "info": self.last_info,
+                    }
+                )
+                self.test_index += 1
+                QTimer.singleShot(50, self._load_next_test_image)
         self.set_status("ตรวจจับผิดพลาด", "#ef4444")
 
     def open_distance_setting(self):
         self.distance_win = DistanceSettingWindow()
         self.distance_win.thresholds_saved.connect(self.on_thresholds_saved)
         self.distance_win.show()
+
+    def open_camera_setting(self):
+        self.camera_win = CameraSettingWindow()
+        self.camera_win.settings_saved.connect(self.on_camera_settings_saved)
+        self.camera_win.show()
+
+    def on_camera_settings_saved(self, camera_index, focal_length):
+        if self.yolo is not None:
+            self.yolo.update_camera_settings(focal_length)
+        self.last_info = (
+            f"<span style='color:#e5e7eb;'>บันทึกค่ากล้องแล้ว: "
+            f"Camera {camera_index}, Focal Length {focal_length:.1f} px</span>"
+        )
+        self.alert.setHtml(self.last_info)
 
     def on_thresholds_saved(self, danger, warning):
         self.update_distance_status()
