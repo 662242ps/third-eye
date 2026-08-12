@@ -27,7 +27,7 @@ class CoreLogicTests(unittest.TestCase):
         self.assertEqual(classify(50, 20, 40), "SAFE")
 
     def test_voice_model_setting_is_validated(self):
-        self.assertEqual(_normalize({"voice_model": "../../bad"})["voice_model"], "th_f_2")
+        self.assertEqual(_normalize({"voice_model": "../../bad"})["voice_model"], "th_m_1")
 
 
 if __name__ == "__main__":

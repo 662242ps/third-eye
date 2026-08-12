@@ -1,169 +1,153 @@
 # Third Eye
 
-Desktop application for detecting road objects from a camera or video, with configurable warning distance and warning zone.
+โปรแกรมตรวจจับวัตถุบนถนนจากกล้อง วิดีโอ หรือรูปภาพ พร้อมประเมินระยะ แบ่งระดับความเสี่ยง และแจ้งเตือนด้วยเสียงภาษาไทย
 
-## Setup
+## เริ่มใช้งานบน Windows
 
-Use Python 3.10 or newer, then create a fresh virtual environment:
-
-```powershell
-py -3.10 -m venv cvce
-.\cvce\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python main.py
-```
-
-`models/best.pt` is required and is included in this repository.
-
-## Distance warning setting
-
-Open the gear menu and choose **Distance Setting** to adjust the distance thresholds in meters.
-
-Default values:
-
-- Danger: distance <= 5 m
-- Warning: distance <= 20 m
-- Safe: distance > 20 m
-
-The values are saved in `settings/distance_thresholds.json` and are reloaded during detection.
-
-## Model setting
-
-Open the gear menu and choose **ตั้งค่าโมเดล** to pick which YOLO weights
-file to run. Any `*.pt` file placed anywhere under `models/` is selectable
-from the dropdown — it no longer has to be named `best.pt`. Use **เพิ่มโมเดล
-จากไฟล์ในเครื่อง...** to import a `.pt` file from elsewhere on disk (it is
-copied into `models/`). The selection is saved in
-`settings/model_settings.json`; switching models restarts the detection
-thread with the new weights.
-
-## Alert sound setting
-
-Open the gear menu and choose **ตั้งค่าเสียงแจ้งเตือน** to pick which alert
-channels are active. The looping siren is DANGER-only; Thai voice announces
-both DANGER and WARNING with the object type and distance, while SAFE is silent.
-The voice also waits for a stable detection and skips repeating the same object
-unless its distance has moved at least 3 m, reducing false repeats from detector
-flicker.
-
-The runtime selects an installed Windows Speech voice whose culture is Thai
-(`th-*`) and never silently falls back to an English voice. If no Thai voice
-is installed, add Thai speech in Windows Language settings. Legacy MP3 clips
-are not used when a measured distance is available, so the app cannot silently
-announce an incomplete or English distance. Distances are converted to Thai
-words (for example, 15.8 becomes “สิบห้า เมตร” in the voice). The bundled
-voice is intentionally slowed down and pauses around the distance for clarity.
-
-For deployment to other computers, the project includes an offline Thai VachanaTTS
-male Thai ONNX voice (`th_m_1`) in `tts/voices/` as the default. Install the Python dependencies from
-`requirements.txt`; the application uses this bundled voice before checking
-other TTS backends or Windows Speech.
-
-## Notes
-
-## วิธีใช้งานแบบควบคุมได้
-
-### เข้า environment `cvce`
-
-เปิด PowerShell ในโฟลเดอร์โปรเจกต์:
+เปิด PowerShell ในโฟลเดอร์โปรเจกต์ แล้วรันตามลำดับ:
 
 ```powershell
 cd C:\CS3\project\pg
 .\cvce\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py
 ```
 
-ถ้า PowerShell ปิดกั้นสคริปต์ ให้ใช้เฉพาะหน้าต่างนี้:
+ถ้า PowerShell ไม่อนุญาตให้เปิด environment ให้ใช้คำสั่งนี้เฉพาะหน้าต่างปัจจุบัน แล้วลอง Activate ใหม่:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\cvce\Scripts\Activate.ps1
 ```
 
-ตรวจสอบ environment:
+ตรวจสอบว่าใช้ Python ใน environment ถูกต้อง:
 
 ```powershell
 where.exe python
 python --version
 ```
 
-ผลลัพธ์ควรชี้ไปที่ `cvce\Scripts\python.exe` จากนั้นติดตั้งและเปิดโปรแกรม:
+บรรทัดแรกควรชี้ไปที่:
 
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python main.py
+```text
+C:\CS3\project\pg\cvce\Scripts\python.exe
 ```
 
-### การควบคุมในหน้าหลัก
+## การควบคุมหน้าหลัก
 
-| ปุ่ม | หน้าที่ |
+| ปุ่ม | วิธีใช้ |
 |---|---|
-| เปิดกล้อง | เริ่มตรวจจับจากกล้อง |
+| เปิดกล้อง | เริ่มตรวจจับจากกล้องตามหมายเลขที่ตั้งไว้ |
 | ปิดกล้อง | หยุดกล้องและหยุดการตรวจจับ |
-| เปิดวิดีโอ | เลือกไฟล์วิดีโอเพื่อตรวจจับ |
-| ทดสอบรูปภาพ | ตรวจจับภาพหนึ่งภาพหรือหลายภาพ |
-| บันทึกผล | บันทึกภาพผลลัพธ์และ CSV |
-| เสียงแจ้งเตือน | ปิดหรือเปิดไซเรนและเสียงพูด |
-| ตั้งค่า | ตั้งค่าระยะ โซน กล้อง โมเดล และเสียง |
+| เปิดวิดีโอ | เลือกไฟล์วิดีโอเพื่อให้ระบบตรวจจับ |
+| เปิดรูปภาพ | เลือกภาพเดียวหรือหลายภาพเพื่อทดสอบ |
+| บันทึกผล | ใช้หลังทดสอบรูปภาพ เพื่อส่งออกภาพผลลัพธ์และ CSV |
+| เสียงแจ้งเตือน | ปิดหรือเปิดเสียงแจ้งเตือนชั่วคราวจากหน้าหลัก |
+| ตั้งค่า | เปิดหน้าตั้งค่าระบบทั้งหมดในหน้าต่างเดียว |
 
-### หลักการแจ้งเตือน
+เมื่อเปิดวิดีโอ แถบเวลาใต้ภาพใช้ลากเพื่อย้อนหรือข้ามไปยังช่วงอื่นได้ ส่วนโหมดรูปภาพมีปุ่มก่อนหน้า/ถัดไปและรองรับล้อเมาส์บนภาพ
 
-- ระยะอันตราย: พูด `อันตะราย มี [วัตถุ] อยู่ในระยะ [จำนวนเต็ม] เมตร`
-- ระยะระวัง: พูด `ระวัง มี [วัตถุ] อยู่ในระยะ [จำนวนเต็ม] เมตร`
+## ตั้งค่าระบบ
+
+กดปุ่ม **ตั้งค่า** แล้วเลือกหน้าในแถบด้านซ้าย จากนั้นแก้ค่าและกด **บันทึกการตั้งค่า** ที่ด้านล่าง
+
+### 1. ระยะเตือนภัย
+
+- ระยะอันตราย: วัตถุที่อยู่ใกล้กว่าหรือเท่ากับค่านี้
+- ระยะระวัง: วัตถุที่ไกลกว่าระยะอันตราย แต่ใกล้กว่าหรือเท่ากับค่านี้
+- ปลอดภัย: วัตถุที่ไกลกว่าระยะระวัง
+
+ระบบตรวจสอบให้ระยะระวังมากกว่าระยะอันตราย และแสดงตัวอย่างการแบ่งระดับทันทีขณะปรับค่า
+
+ค่าที่บันทึกอยู่ใน `settings/distance_thresholds.json`
+
+### 2. โซนตรวจจับ
+
+ลากจุดสีขาว 3 จุดบนภาพเพื่อกำหนดพื้นที่ตรวจจับ เลือก preset ได้จากรายการด้านขวา แล้วกด **บันทึกการตั้งค่า**
+
+โซนที่ใช้งานจริงถูกบันทึกใน `zones/active.txt` การตรวจจับจะใช้เฉพาะวัตถุที่อยู่ในโซนนี้ในโหมดกล้อง/วิดีโอ
+
+### 3. กล้อง
+
+- **หมายเลขกล้อง**: กล้องตัวแรกมักเป็น `0` ถ้ามีหลายกล้องให้ลอง `1`, `2` เป็นต้น
+- **Focal Length**: ค่าปรับเทียบกล้อง ใช้ร่วมกับความสูงโดยประมาณของวัตถุเพื่อคำนวณระยะ
+
+ควรปรับเทียบกับกล้องและความละเอียดที่จะใช้จริง เพราะระยะเป็นค่าประมาณ ไม่ใช่การวัดด้วยเซนเซอร์วัดระยะ
+
+ค่าที่บันทึกอยู่ใน `settings/camera_settings.json`
+
+### 4. โมเดลตรวจจับ
+
+เลือกโมเดล YOLO จากรายการ หรือกดเลือกไฟล์ `.pt` เพื่อเพิ่มโมเดลจากเครื่อง ไฟล์โมเดลจะถูกเก็บไว้ในโฟลเดอร์ `models/`
+
+เมื่อเปลี่ยนโมเดล ระบบจะเริ่มโหลดโมเดลใหม่ใน worker ของการตรวจจับ และอาจใช้เวลาสักครู่ก่อนสถานะ AI จะพร้อม
+
+ค่าที่บันทึกอยู่ใน `settings/model_settings.json`
+
+### 5. เสียงแจ้งเตือน
+
+- เปิด/ปิดเสียงไซเรน
+- เปิด/ปิดเสียงพูดภาษาไทย
+- เลือกโมเดลเสียงที่มีอยู่ใน `tts/voices/`
+
+ค่าเริ่มต้นของโปรเจกต์คือ `th_m_1` และมีโมเดล `th_f_1` ให้เลือกด้วย
+
+ค่าที่บันทึกอยู่ใน `settings/alert_settings.json`
+
+## หลักการแจ้งเตือน
+
+- ระยะอันตราย: เสียงพูดใช้รูปแบบ `อันตะราย มี [วัตถุ] อยู่ในระยะ [จำนวนเต็ม] เมตร`
+- ระยะระวัง: เสียงพูดใช้รูปแบบ `ระวัง มี [วัตถุ] อยู่ในระยะ [จำนวนเต็ม] เมตร`
 - ระยะปลอดภัย: ไม่พูดแจ้งเตือน
-- วัตถุอันตรายมีลำดับความสำคัญสูงกว่าวัตถุระวัง
-- ระบบลดการพูดซ้ำและรอผลตรวจจับให้คงที่ก่อนแจ้งเตือน
+- ถ้ามีทั้งอันตรายและระวัง ระบบจะเลือกแจ้งเตือนอันตรายก่อน
+- ระบบรอผลตรวจจับให้คงที่และลดการพูดซ้ำ เพื่อไม่ให้เสียงถี่จากการกระพริบของโมเดล
+- ค่าทศนิยมยังแสดงในหน้าจอได้ แต่เสียงพูดเฉพาะจำนวนเต็ม เช่น `15.8` จะพูด `15 เมตร`
+
+ค่าเสียงพูดหลักใน `vision/voice_alert.py`:
+
+- `SPEECH_LENGTH_SCALE = 1.3`: ความยาว/ความช้าของเสียง ยิ่งมากยิ่งพูดช้าลง
+- `SPEECH_VOLUME = 1.2`: ระดับเสียงของเสียงที่สร้าง
+- `REPEAT_DISTANCE_M = 3.0`: ต้องมีระยะเปลี่ยนอย่างน้อย 3 เมตรจึงมีโอกาสพูดซ้ำ
+
+## ตรวจสอบระบบ
+
+หลังแก้โค้ด ให้รัน:
+
+```powershell
+python -m py_compile ui\icons.py ui\settings_window.py ui\main_window.py
+python -m unittest discover tests -v
+```
+
+ผลที่ถูกต้องควรลงท้ายด้วย:
+
+```text
+Ran 5 tests
+OK
+```
+
+## ไฟล์สำคัญ
+
+- `main.py`: จุดเริ่มต้นโปรแกรม
+- `ui/main_window.py`: หน้าหลักและการเชื่อมต่อระบบ
+- `ui/settings_window.py`: หน้าตั้งค่ารวม
+- `ui/icons.py`: ไอคอน SVG ภายในโปรแกรม
+- `vision/yolo_thread.py`: worker ตรวจจับและจัดระดับความเสี่ยง
+- `vision/voice_alert.py`: สร้างและเล่นเสียงพูดภาษาไทย
+- `settings/`: ค่าตั้งค่าที่บันทึกไว้
+- `zones/active.txt`: โซนที่กำลังใช้งาน
+- `models/`: โมเดล YOLO
+- `tts/voices/`: โมเดลเสียงภาษาไทยแบบ offline
 
 ## เครดิตโมเดลเสียงภาษาไทย
 
-ไฟล์เสียงภาษาไทยใน `tts/voices/` ใช้โมเดล **VachanaTTS** แบบ ONNX จาก:
+โมเดลเสียงใน `tts/voices/` มาจากโครงการ **VachanaTTS**:
 
 - [VachanaTTS บน Hugging Face](https://huggingface.co/VIZINTZOR/VachanaTTS)
 - [VachanaTTS source repository](https://github.com/VYNCX/VachanaTTS)
 - [PyThaiTTS](https://github.com/PyThaiNLP/PyThaiTTS)
 
-โปรดตรวจสอบ license จากแหล่งต้นทางก่อนนำโปรแกรมหรือโมเดลไปแจกจ่ายเชิงพาณิชย์
+โปรดอ่าน license จากแหล่งต้นทางก่อนนำโมเดลหรือโปรแกรมไปเผยแพร่เชิงพาณิชย์
 
-## Performance and deployment notes
+## หมายเหตุด้านความปลอดภัย
 
-- YOLO model loading is performed by its worker thread so the interface can
-  remain responsive while the model initializes.
-- Detection distance is an estimate based on bounding-box height, calibrated
-  focal length, and approximate object height. Calibrate the camera before
-  relying on the distance for safety decisions.
-- Thai TTS models are local ONNX files. Only the selected voice model should
-  be loaded; switching voices may briefly use CPU while the new model loads in
-  the background.
-- Run the basic logic checks with `python -m unittest discover tests`.
-
-- Configure the polygon in **Zone Setting**. The active zone is saved in `zones/active.txt`.
-- Camera index and focal-length calibration are available from the gear menu
-  under **Camera Setting** and saved in `settings/camera_settings.json`.
-- Use **Test หลายภาพ** to select one or more still images. Test mode processes
-  every image across the full frame without applying the active zone, while
-  retaining estimated distance and risk labels.
-- After a batch finishes, use **บันทึกผล** to export annotated JPEG images and
-  a UTF-8 `detection_results.csv` summary.
-- Browse processed images with the previous/next buttons or the mouse wheel
-  while the pointer is over the image.
-- Uploaded videos show a timeline with current/duration time. Drag the slider
-  to seek to another point in the clip.
-- Reported distances are estimates. Calibrate `FOCAL_LENGTH` in `vision/yolo_thread.py` against the camera used in deployment.
-- Bounding boxes are velocity-predicted between inference results (see `YoloThread._predict_box`) so fast-moving objects stay tracked and the drawn box doesn't lag behind, even though inference runs slower than the display refresh rate.
-
-## Danger alerts (sound + voice)
-
-When a tracked object enters **DANGER** range during live camera/video playback:
-
-- A looping siren plays (`assets/alert_danger.wav`) via `winsound` — see `vision/alert_sound.py`.
-- A Thai voice clip names the nearest dangerous object (e.g. "ระวัง มีรถยนต์อยู่ใกล้"), throttled to once every 3 seconds per label — see `vision/voice_alert.py`. Clips live in `assets/voice/*.mp3` and are played through the Windows MCI API (`winmm.dll`), so no ffmpeg or audio library is required at runtime.
-- Both are Windows-only (they no-op elsewhere) and can be muted from the **🔊 เสียงเตือน** button in the toolbar.
-- Neither plays during **Test หลายภาพ** batch testing, only for live camera/video frames.
-
-To add or re-record a voice phrase (e.g. after adding a new detectable class), regenerate the MP3 with [gTTS](https://pypi.org/project/gTTS/) (`pip install gTTS`, dev-time only):
-
-```python
-from gtts import gTTS
-gTTS(text="ระวัง มีรถบัสอยู่ใกล้", lang="th").save("assets/voice/bus_danger.mp3")
-```
+ระยะที่แสดงเป็นค่าประมาณจากภาพ กล้อง และ Focal Length จึงควรทดสอบและปรับเทียบก่อนใช้ในสถานการณ์จริง ระบบนี้ไม่ควรใช้แทนการควบคุมรถหรือการตัดสินใจด้านความปลอดภัยของมนุษย์

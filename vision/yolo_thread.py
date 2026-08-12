@@ -43,7 +43,7 @@ CLASS_ALIASES = {
 
 # Practical confidence thresholds for real webcam/video use.
 # Higher values reduce false positives. Lower values detect more objects but may be noisy.
-conf = 0.7
+conf = 0.5
 CLASS_CONF = {
     "person": conf,
     "car": conf,
@@ -554,6 +554,13 @@ class YoloThread(QThread):
         if not detections:
             return '<span style="color:#94a3b8;">ไม่พบวัตถุในโซนตรวจจับ</span>'
 
+        alert_detections = [
+            detection for detection in detections
+            if detection["status"] in ("DANGER", "WARNING")
+        ]
+        if not alert_detections:
+            return '<span style="color:#94a3b8;">ยังไม่มีวัตถุในระยะเตือน</span>'
+
         header = (
             f'<span style="color:#e5e7eb;">'
             f'อันตราย ≤ {thresholds["danger"]} M | '
@@ -568,7 +575,7 @@ class YoloThread(QThread):
             f'[{detection["status_thai"]}] '
             f'conf {detection["score"]:.2f}'
             f'</span><br>'
-            for index, detection in enumerate(detections, 1)
+            for index, detection in enumerate(alert_detections, 1)
         )
         return header + rows
 
