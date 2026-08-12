@@ -110,8 +110,8 @@ class VoiceAnnouncer:
         self._speech_lock = threading.Lock()
         self._speech_thread = None
         self._preload_thread = None
-        self._voice_model = "th_f_2"
-        self._vachana_model = TTS_DIR / "voices" / "th_f_2.onnx"
+        self._voice_model = "th_m_1"
+        self._vachana_model = TTS_DIR / "voices" / "th_m_1.onnx"
         self._voice_generation = 0
 
         if sys.platform == "win32" and VOICE_DIR.is_dir():
@@ -134,13 +134,13 @@ class VoiceAnnouncer:
         )
 
     def set_voice_model(self, model_name):
-        model_name = str(model_name or "th_f_2").strip()
+        model_name = str(model_name or "th_m_1").strip()
         if not model_name.startswith("th_"):
-            model_name = "th_f_2"
+            model_name = "th_m_1"
         model_path = TTS_DIR / "voices" / f"{model_name}.onnx"
         if not model_path.is_file():
-            model_name = "th_f_2"
-            model_path = TTS_DIR / "voices" / "th_f_2.onnx"
+            model_name = "th_m_1"
+            model_path = TTS_DIR / "voices" / "th_m_1.onnx"
         if model_name != self._voice_model:
             self._voice_generation += 1
             self.stop()

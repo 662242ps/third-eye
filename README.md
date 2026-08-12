@@ -56,7 +56,7 @@ words (for example, 15.8 becomes “สิบห้า เมตร” in the vo
 voice is intentionally slowed down and pauses around the distance for clarity.
 
 For deployment to other computers, the project includes an offline Thai VachanaTTS
-female Thai ONNX voice (`th_f_2`) in `tts/voices/`. Install the Python dependencies from
+male Thai ONNX voice (`th_m_1`) in `tts/voices/` as the default. Install the Python dependencies from
 `requirements.txt`; the application uses this bundled voice before checking
 other TTS backends or Windows Speech.
 

@@ -11,7 +11,7 @@ ALERT_SETTINGS_FILE = SETTINGS_DIR / "alert_settings.json"
 DEFAULT_ALERT_SETTINGS = {
     "siren_enabled": True,
     "voice_enabled": True,
-    "voice_model": "th_f_2",
+    "voice_model": "th_m_1",
 }
 
 
@@ -19,7 +19,7 @@ def _normalize(data):
     try:
         siren_enabled = bool(data.get("siren_enabled", True))
         voice_enabled = bool(data.get("voice_enabled", True))
-        voice_model = str(data.get("voice_model", "th_f_2")).strip() or "th_f_2"
+        voice_model = str(data.get("voice_model", "th_m_1")).strip() or "th_m_1"
     except AttributeError:
         return DEFAULT_ALERT_SETTINGS.copy()
     if not re.fullmatch(r"th_[fm]_[12]", voice_model):
@@ -41,7 +41,7 @@ def load_alert_settings():
         return DEFAULT_ALERT_SETTINGS.copy()
 
 
-def save_alert_settings(siren_enabled, voice_enabled, voice_model="th_f_2"):
+def save_alert_settings(siren_enabled, voice_enabled, voice_model="th_m_1"):
     settings = _normalize(
         {
             "siren_enabled": siren_enabled,

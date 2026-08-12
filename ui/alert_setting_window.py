@@ -132,7 +132,7 @@ class AlertSettingWindow(QMainWindow):
         settings = save_alert_settings(
             self.siren_check.isChecked(),
             self.voice_check.isChecked(),
-            self.voice_model_combo.currentData() or "th_f_2",
+            self.voice_model_combo.currentData() or "th_m_1",
         )
         self.settings_saved.emit(
             settings["siren_enabled"],
