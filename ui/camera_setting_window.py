@@ -17,6 +17,7 @@ from vision.camera_config import load_camera_settings, save_camera_settings
 
 APP_STYLE = """
 QMainWindow { background: #0f172a; }
+QWidget { font-family: 'Leelawadee UI'; }
 QLabel { color: #e5e7eb; }
 QFrame#card {
     background: #172033;
@@ -26,7 +27,7 @@ QFrame#card {
 QSpinBox, QDoubleSpinBox {
     background: #0b1220; color: #f8fafc;
     border: 1px solid #334155; border-radius: 10px;
-    padding: 8px 10px; font-size: 15px;
+    padding: 8px 10px; font-size: 15px; min-height: 24px;
 }
 QPushButton {
     background: #2563eb; color: white; border: none;

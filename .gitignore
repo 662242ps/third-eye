@@ -9,6 +9,9 @@ __pycache__/
 # Runtime-generated previews
 tmp/
 
+# Generated TTS playback files
+tts/alert_*.wav
+
 # Operating-system files
 .DS_Store
 Thumbs.db

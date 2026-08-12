@@ -18,6 +18,7 @@ APP_STYLE = """
 QMainWindow {
     background: #0f172a;
 }
+QWidget { font-family: 'Leelawadee UI'; }
 QLabel {
     color: #e5e7eb;
 }
@@ -37,6 +38,7 @@ QDoubleSpinBox {
     border-radius: 10px;
     padding: 8px 10px;
     font-size: 16px;
+    min-height: 24px;
 }
 QDoubleSpinBox:focus {
     border: 1px solid #38bdf8;
@@ -68,6 +70,7 @@ class DistanceSettingWindow(QMainWindow):
         self.resize(620, 430)
         self.setStyleSheet(APP_STYLE)
         self._build_ui()
+        self.setWindowTitle("Third Eye - ตั้งค่าระยะเตือนภัย")
         self._load_values()
 
     def _build_ui(self):
@@ -195,6 +198,42 @@ class DistanceSettingWindow(QMainWindow):
             self.status.setText("กรุณาตั้งค่าระวังให้มากกว่าค่าอันตราย")
             return
 
+        thresholds = save_distance_thresholds(danger, warning)
+        self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
+        self.status.setText("บันทึกสำเร็จ ใช้ค่าระยะใหม่แล้ว")
+        self.thresholds_saved.emit(thresholds["danger"], thresholds["warning"])
+        self.close()
+
+    # Keep all user-facing validation text in one place and ensure it remains
+    # readable even when an older settings file contains legacy text.
+    def _update_preview(self):
+        danger = self.danger_spin.value()
+        warning = self.warning_spin.value()
+        if warning <= danger:
+            self.preview.setText("⚠ ระยะเตือนต้องมากกว่าระยะอันตราย")
+            self.preview.setStyleSheet(
+                "background:#3b1d1d; color:#fecaca; border:1px solid #ef4444; "
+                "border-radius:12px; padding:12px; font-size:14px;"
+            )
+            return
+        self.preview.setStyleSheet(
+            "background:#101827; color:#e5e7eb; border:1px solid #243244; "
+            "border-radius:12px; padding:12px; font-size:14px;"
+        )
+        self.preview.setText(
+            "ตัวอย่างการแบ่งระดับ\n"
+            f"อันตราย: ไม่เกิน {danger:.1f} เมตร\n"
+            f"ระวัง: มากกว่า {danger:.1f} ถึง {warning:.1f} เมตร\n"
+            f"ปลอดภัย: มากกว่า {warning:.1f} เมตร"
+        )
+
+    def save_values(self):
+        danger = self.danger_spin.value()
+        warning = self.warning_spin.value()
+        if warning <= danger:
+            self.status.setStyleSheet("color:#f87171; font-size:13px; font-weight:700;")
+            self.status.setText("กรุณาตั้งค่าระยะเตือนให้มากกว่าระยะอันตราย")
+            return
         thresholds = save_distance_thresholds(danger, warning)
         self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
         self.status.setText("บันทึกสำเร็จ ใช้ค่าระยะใหม่แล้ว")

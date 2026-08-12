@@ -1,5 +1,6 @@
 """Persisted on/off state for the two DANGER alert channels (siren + voice)."""
 import json
+import re
 from pathlib import Path
 
 
@@ -10,6 +11,7 @@ ALERT_SETTINGS_FILE = SETTINGS_DIR / "alert_settings.json"
 DEFAULT_ALERT_SETTINGS = {
     "siren_enabled": True,
     "voice_enabled": True,
+    "voice_model": "th_f_2",
 }
 
 
@@ -17,9 +19,16 @@ def _normalize(data):
     try:
         siren_enabled = bool(data.get("siren_enabled", True))
         voice_enabled = bool(data.get("voice_enabled", True))
+        voice_model = str(data.get("voice_model", "th_f_2")).strip() or "th_f_2"
     except AttributeError:
         return DEFAULT_ALERT_SETTINGS.copy()
-    return {"siren_enabled": siren_enabled, "voice_enabled": voice_enabled}
+    if not re.fullmatch(r"th_[fm]_[12]", voice_model):
+        voice_model = DEFAULT_ALERT_SETTINGS["voice_model"]
+    return {
+        "siren_enabled": siren_enabled,
+        "voice_enabled": voice_enabled,
+        "voice_model": voice_model,
+    }
 
 
 def load_alert_settings():
@@ -32,9 +41,13 @@ def load_alert_settings():
         return DEFAULT_ALERT_SETTINGS.copy()
 
 
-def save_alert_settings(siren_enabled, voice_enabled):
+def save_alert_settings(siren_enabled, voice_enabled, voice_model="th_f_2"):
     settings = _normalize(
-        {"siren_enabled": siren_enabled, "voice_enabled": voice_enabled}
+        {
+            "siren_enabled": siren_enabled,
+            "voice_enabled": voice_enabled,
+            "voice_model": voice_model,
+        }
     )
     SETTINGS_DIR.mkdir(exist_ok=True)
     with ALERT_SETTINGS_FILE.open("w", encoding="utf-8") as file:

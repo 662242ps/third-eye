@@ -43,8 +43,7 @@ CLASS_ALIASES = {
 
 # Practical confidence thresholds for real webcam/video use.
 # Higher values reduce false positives. Lower values detect more objects but may be noisy.
-conf=0.7
-print(conf)
+conf = 0.7
 CLASS_CONF = {
     "person": conf,
     "car": conf,
@@ -84,6 +83,13 @@ STATUS_STYLE = {
     "DANGER": {"color": (0, 0, 255), "html": "#ef4444", "thai": "อันตราย"},
     "WARNING": {"color": (0, 165, 255), "html": "#f59e0b", "thai": "ระวัง"},
     "SAFE": {"color": (0, 255, 0), "html": "#22c55e", "thai": "ปลอดภัย"},
+}
+
+LABEL_THAI = {
+    "car": "รถยนต์",
+    "truck": "รถบรรทุก",
+    "motorcycle": "รถจักรยานยนต์",
+    "person": "คน",
 }
 
 
@@ -131,35 +137,13 @@ class YoloThread(QThread):
         if not self.model_path.is_file():
             raise FileNotFoundError(f"Model file not found: {self.model_path}")
 
-        self.device = _select_device()
-        self.use_half = self.device == "cuda"
-        if torch is not None:
-            torch.set_grad_enabled(False)
-            if self.use_half:
-                torch.backends.cudnn.benchmark = True
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-            else:
-                # Match main.py's OMP/MKL cap -- see the comment there for why
-                # 4 threads, not all available cores.
-                cpu_threads = max(1, min(4, os.cpu_count() or 2))
-                torch.set_num_threads(cpu_threads)
-                try:
-                    torch.set_num_interop_threads(1)
-                except RuntimeError:
-                    pass
-                if hasattr(torch.backends, "mkldnn"):
-                    torch.backends.mkldnn.enabled = True
-            if hasattr(torch, "set_float32_matmul_precision"):
-                torch.set_float32_matmul_precision("high")
-        self.model = YOLO(str(self.model_path))
-        self.model.to(self.device)
-        try:
-            self.model.fuse()
-        except (AttributeError, RuntimeError):
-            pass
-        print(f"YOLO device: {self.device}")
-        print("MODEL CLASSES:", self.model.names)
+        # Heavy model loading is deferred to run() so the Qt UI remains
+        # responsive while the model/device is initialized.
+        self.device = None
+        self.use_half = False
+        self.model = None
+        self.class_ids = []
+        self.model_ready = False
 
         self._stop_requested = Event()
         self._frame_ready = Event()
@@ -180,17 +164,39 @@ class YoloThread(QThread):
         self._thresholds_mtime = 0
         self._thresholds_last_check = 0.0
 
+    def _initialize_model(self):
+        self.device = _select_device()
+        self.use_half = self.device == "cuda"
+        if torch is not None:
+            torch.set_grad_enabled(False)
+            if not self.use_half:
+                cpu_threads = max(1, min(4, os.cpu_count() or 2))
+                torch.set_num_threads(cpu_threads)
+                try:
+                    torch.set_num_interop_threads(1)
+                except RuntimeError:
+                    pass
+                if hasattr(torch.backends, "mkldnn"):
+                    torch.backends.mkldnn.enabled = True
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+        self.model = YOLO(str(self.model_path))
+        self.model.to(self.device)
+        try:
+            self.model.fuse()
+        except (AttributeError, RuntimeError):
+            pass
         class_names = (
             self.model.names.items()
             if isinstance(self.model.names, dict)
             else enumerate(self.model.names)
         )
         self.class_ids = [
-            class_id
-            for class_id, name in class_names
+            class_id for class_id, name in class_names
             if _normalize_label(name) in REAL_HEIGHT
         ]
         self._warm_up()
+        self.model_ready = True
 
     def _warm_up(self):
         """Build the inference graph before the first real camera frame."""
@@ -208,6 +214,8 @@ class YoloThread(QThread):
     def update_frame(self, frame, use_zone=True):
         """Store the newest frame and discard older unprocessed frames."""
         with self._lock:
+            if self._stop_requested.is_set():
+                return False
             if self._frame_id != self._processed_frame_id:
                 return False
             self._frame = frame.copy()
@@ -256,6 +264,8 @@ class YoloThread(QThread):
         CSV export code should pass `predict=False` to keep the exact
         detected box.
         """
+        if not self.model_ready:
+            return []
         with self._lock:
             detections = [detection.copy() for detection in self.last_detections]
         if not predict:
@@ -288,6 +298,11 @@ class YoloThread(QThread):
         )
 
     def run(self):
+        try:
+            self._initialize_model()
+        except Exception as error:
+            self.error_ready.emit(f"YOLO model load error: {error}")
+            return
         while not self._stop_requested.is_set():
             self._frame_ready.wait(timeout=0.1)
             self._frame_ready.clear()
@@ -387,6 +402,9 @@ class YoloThread(QThread):
             for box in result.boxes:
                 class_id = int(box.cls[0])
                 label = _normalize_label(self.model.names[class_id])
+                # Ignore custom-model classes without distance calibration.
+                if label not in REAL_HEIGHT:
+                    continue
                 score = float(box.conf[0])
                 if score < CLASS_CONF.get(label, 1.0):
                     continue
@@ -545,8 +563,8 @@ class YoloThread(QThread):
         )
         rows = "".join(
             f'<span style="color:{detection["html"]};">'
-            f'{index}. {detection["label"]} '
-            f'{detection["dist"]} M '
+            f'{index}. {LABEL_THAI.get(detection["label"], detection["label"])} '
+            f'{detection["dist"]:.0f} เมตร '
             f'[{detection["status_thai"]}] '
             f'conf {detection["score"]:.2f}'
             f'</span><br>'

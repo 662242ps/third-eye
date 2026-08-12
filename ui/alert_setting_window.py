@@ -2,6 +2,7 @@ from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QLabel,
     QMainWindow,
@@ -11,10 +12,13 @@ from PyQt5.QtWidgets import (
 )
 
 from vision.alert_config import load_alert_settings, save_alert_settings
+from pathlib import Path
 
 
 APP_STYLE = """
 QMainWindow { background: #0f172a; }
+QWidget { font-family: 'Leelawadee UI'; }
+QComboBox { min-height: 28px; padding: 5px 10px; }
 QLabel { color: #e5e7eb; }
 QFrame#card {
     background: #172033;
@@ -47,7 +51,7 @@ QPushButton:hover { background: #1d4ed8; }
 
 
 class AlertSettingWindow(QMainWindow):
-    settings_saved = pyqtSignal(bool, bool)
+    settings_saved = pyqtSignal(bool, bool, str)
 
     def __init__(self):
         super().__init__()
@@ -55,6 +59,7 @@ class AlertSettingWindow(QMainWindow):
         self.resize(520, 380)
         self.setStyleSheet(APP_STYLE)
         self._build_ui()
+        self.setWindowTitle("Third Eye - ตั้งค่าเสียงแจ้งเตือน")
         self._load_values()
 
     def _build_ui(self):
@@ -64,11 +69,11 @@ class AlertSettingWindow(QMainWindow):
         layout.setContentsMargins(26, 24, 26, 24)
         layout.setSpacing(16)
 
-        title = QLabel("รูปแบบเสียงแจ้งเตือนเมื่ออยู่ในระยะอันตราย")
+        title = QLabel("รูปแบบเสียงแจ้งเตือนเมื่อพบวัตถุใกล้")
         title.setFont(QFont("Arial", 17, QFont.Bold))
         hint = QLabel(
-            "เลือกได้ว่าจะใช้เสียงไซเรน เสียงพูดบอกชนิดวัตถุ หรือทั้งสองอย่าง "
-            "(ถ้าไม่เลือกเลย จะไม่มีเสียงแจ้งเตือนแม้จะไม่ได้ปิดเสียงหลักไว้)"
+            "เลือกเสียงไซเรนสำหรับระดับอันตราย และเสียงพูดสำหรับระดับอันตราย/ระวัง "
+            "โดยเสียงพูดจะแจ้งชนิดวัตถุและระยะทาง (ระดับปลอดภัยจะไม่มีเสียง)"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#94a3b8; font-size:13px;")
@@ -83,9 +88,16 @@ class AlertSettingWindow(QMainWindow):
         card_layout.addWidget(self.siren_check)
         card_layout.addWidget(self.voice_check)
 
+        card_layout.addWidget(QLabel("โมเดลเสียงภาษาไทย"))
+        self.voice_model_combo = QComboBox()
+        voice_dir = Path(__file__).resolve().parents[1] / "tts" / "voices"
+        for model_path in sorted(voice_dir.glob("th_*.onnx")):
+            self.voice_model_combo.addItem(model_path.stem, model_path.stem)
+        card_layout.addWidget(self.voice_model_combo)
+
         freq_note = QLabel(
-            "หมายเหตุ: เสียงพูดจะไม่พูดซ้ำวัตถุเดิม เว้นแต่ระยะห่างเปลี่ยนไปจากจุดที่แจ้งครั้งก่อน "
-            "อย่างน้อย 3 เมตร เพื่อลดความถี่การแจ้งเตือน"
+            "หมายเหตุ: ระบบจะรอผลตรวจจับให้คงอยู่ช่วงสั้น ๆ และไม่พูดซ้ำวัตถุเดิมบ่อยเกินไป "
+            "เว้นแต่ระยะห่างเปลี่ยนไปอย่างน้อย 3 เมตร"
         )
         freq_note.setWordWrap(True)
         freq_note.setStyleSheet(
@@ -112,10 +124,35 @@ class AlertSettingWindow(QMainWindow):
         settings = load_alert_settings()
         self.siren_check.setChecked(settings["siren_enabled"])
         self.voice_check.setChecked(settings["voice_enabled"])
+        index = self.voice_model_combo.findData(settings["voice_model"])
+        if index >= 0:
+            self.voice_model_combo.setCurrentIndex(index)
 
     def save_values(self):
         settings = save_alert_settings(
-            self.siren_check.isChecked(), self.voice_check.isChecked()
+            self.siren_check.isChecked(),
+            self.voice_check.isChecked(),
+            self.voice_model_combo.currentData() or "th_f_2",
         )
-        self.settings_saved.emit(settings["siren_enabled"], settings["voice_enabled"])
+        self.settings_saved.emit(
+            settings["siren_enabled"],
+            settings["voice_enabled"],
+            settings["voice_model"],
+        )
         self.close()
+
+    def _load_values(self):
+        settings = load_alert_settings()
+        self.siren_check.setChecked(settings["siren_enabled"])
+        self.voice_check.setChecked(settings["voice_enabled"])
+        display_names = {
+            "th_f_1": "เสียงผู้หญิง 1 (th_f_1)",
+            "th_f_2": "เสียงผู้หญิง 2 (th_f_2)",
+            "th_m_1": "เสียงผู้ชาย 1 (th_m_1)",
+        }
+        for index in range(self.voice_model_combo.count()):
+            model_id = self.voice_model_combo.itemData(index)
+            self.voice_model_combo.setItemText(index, display_names.get(model_id, model_id))
+        index = self.voice_model_combo.findData(settings["voice_model"])
+        if index >= 0:
+            self.voice_model_combo.setCurrentIndex(index)

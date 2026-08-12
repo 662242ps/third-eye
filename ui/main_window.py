@@ -62,6 +62,7 @@ QFrame#videoCard, QFrame#alertCard {
     border: 1px solid #2b3a52;
     border-radius: 16px;
 }
+QFrame#alertCard { min-width: 390px; }
 QFrame#metricCard {
     background: #101a2b;
     border: 1px solid #26364c;
@@ -144,8 +145,12 @@ QTextEdit {
     border: 1px solid #243244;
     border-radius: 14px;
     padding: 12px;
-    font-size: 14px;
+    font-size: 15px;
+    font-family: 'Leelawadee UI';
 }
+QPushButton:focus { border: 2px solid #93c5fd; }
+QLabel#sectionTitle { color:#f8fafc; font-size:16px; font-weight:700; }
+QLabel#sectionHint { color:#94a3b8; font-size:12px; }
 """
 
 
@@ -153,8 +158,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Third Eye")
-        self.resize(1120, 720)
-        self.setMinimumSize(960, 640)
+        self.resize(1360, 820)
+        self.setMinimumSize(1180, 720)
         self.setStyleSheet(APP_STYLE)
 
         self.cap = None
@@ -183,9 +188,11 @@ class MainWindow(QMainWindow):
         self.voice_announcer = VoiceAnnouncer()
         alert_settings = load_alert_settings()
         self.danger_alarm.set_enabled(alert_settings["siren_enabled"])
+        self.voice_announcer.set_voice_model(alert_settings["voice_model"])
         self.voice_announcer.set_enabled(alert_settings["voice_enabled"])
 
         self._build_ui()
+        self._apply_ui_labels()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.update_distance_status()
@@ -197,6 +204,8 @@ class MainWindow(QMainWindow):
             self.yolo.result_ready.connect(self.on_yolo_result)
             self.yolo.error_ready.connect(self.on_yolo_error)
             self.yolo.start()
+            QTimer.singleShot(1200, self.voice_announcer.preload)
+            self.set_status("Loading detection model...", "#f59e0b")
             self.set_status("พร้อมใช้งาน", "#22c55e")
         except Exception as error:
             self.alert.setText(f"Cannot load YOLO model ({model_relative}): {error}")
@@ -269,6 +278,31 @@ class MainWindow(QMainWindow):
         self.btn_settings.setToolTip("การตั้งค่า")
         self.btn_settings.setFont(QFont("Arial", 15, QFont.Bold))
 
+        def add_group(title, buttons):
+            group = QFrame(objectName="toolbarGroup")
+            group_layout = QVBoxLayout(group)
+            group_layout.setContentsMargins(8, 4, 8, 4)
+            group_layout.setSpacing(2)
+            group_label = QLabel(title)
+            group_label.setObjectName("toolbarLabel")
+            group_layout.addWidget(group_label)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            for button in buttons:
+                button.setFixedHeight(36)
+                button.setMinimumWidth(108)
+                row.addWidget(button)
+            group_layout.addLayout(row)
+            toolbar_layout.addWidget(group)
+
+        add_group("แหล่งภาพ", (self.btn_open, self.btn_close, self.btn_video))
+        add_group("ทดสอบและผลลัพธ์", (self.btn_test, self.btn_save_results))
+        add_group("เสียง", (self.btn_mute,))
+
+        # Restore the original flat toolbar layout.
+        for group in toolbar.findChildren(QFrame, "toolbarGroup"):
+            group.hide()
         for button in (self.btn_open, self.btn_close, self.btn_video, self.btn_test):
             button.setFixedSize(142, 42)
             toolbar_layout.addWidget(button)
@@ -276,7 +310,6 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.btn_save_results)
         self.btn_mute.setFixedSize(130, 42)
         toolbar_layout.addWidget(self.btn_mute)
-
         toolbar_layout.addStretch()
         self.btn_settings.setFixedSize(120, 42)
         toolbar_layout.addWidget(self.btn_settings)
@@ -302,13 +335,23 @@ class MainWindow(QMainWindow):
 
         content = QFrame(objectName="content")
         content_layout = QHBoxLayout(content)
-        content_layout.setContentsMargins(24, 10, 24, 24)
-        content_layout.setSpacing(18)
+        content_layout.setContentsMargins(24, 16, 24, 24)
+        content_layout.setSpacing(16)
 
         video_card = QFrame(objectName="videoCard")
         video_layout = QVBoxLayout(video_card)
         video_layout.setContentsMargins(14, 14, 14, 14)
         video_layout.setSpacing(10)
+
+        video_header = QHBoxLayout()
+        video_title = QLabel("ภาพตรวจจับ")
+        video_title.setObjectName("sectionTitle")
+        video_hint = QLabel("เรียลไทม์ • ลากแถบด้านล่างเพื่อเลือกช่วงวิดีโอ")
+        video_hint.setObjectName("sectionHint")
+        video_header.addWidget(video_title)
+        video_header.addStretch()
+        video_header.addWidget(video_hint)
+        video_layout.addLayout(video_header)
 
         self.video = QLabel(alignment=Qt.AlignCenter)
         self.video.setMinimumSize(480, 380)
@@ -366,23 +409,26 @@ class MainWindow(QMainWindow):
         video_layout.addWidget(self.video_timeline_widget)
 
         alert_card = QFrame(objectName="alertCard")
-        alert_card.setMinimumWidth(320)
-        alert_card.setMaximumWidth(370)
+        alert_card.setMinimumWidth(390)
+        alert_card.setMaximumWidth(430)
         alert_layout = QVBoxLayout(alert_card)
         alert_layout.setContentsMargins(14, 14, 14, 14)
         alert_layout.setSpacing(10)
 
         alert_title = QLabel("รายการแจ้งเตือน")
-        alert_title.setFont(QFont("Arial", 14, QFont.Bold))
+        alert_title.setFont(QFont("Leelawadee UI", 17, QFont.Bold))
+        alert_hint = QLabel("แสดงวัตถุที่อยู่ในระยะอันตรายและระวัง")
+        alert_hint.setObjectName("sectionHint")
         self.alert = QTextEdit()
         self.alert.setReadOnly(True)
         self.alert.setHtml(
             "<span style='color:#94a3b8;'>เปิดกล้องหรืออัปโหลดวิดีโอเพื่อเริ่มตรวจจับ</span>"
         )
         alert_layout.addWidget(alert_title)
+        alert_layout.addWidget(alert_hint)
 
-        self.source_metric = self._make_metric("SOURCE", self.source_name)
-        self.fps_metric = self._make_metric("DISPLAY / AI FPS", "--")
+        self.source_metric = self._make_metric("แหล่งภาพ", self.source_name)
+        self.fps_metric = self._make_metric("อัตราเฟรม / AI", "--")
         metrics = QHBoxLayout()
         metrics.setSpacing(8)
         metrics.addWidget(self.source_metric)
@@ -404,6 +450,40 @@ class MainWindow(QMainWindow):
         main.addWidget(header)
         main.addWidget(toolbar)
         main.addWidget(content)
+
+    def _apply_ui_labels(self):
+        """Normalize the primary controls to concise, readable Thai labels."""
+        labels = {
+            self.btn_open: "เปิดกล้อง",
+            self.btn_close: "ปิดกล้อง",
+            self.btn_video: "เปิดวิดีโอ",
+            self.btn_test: "ทดสอบรูปภาพ",
+            self.btn_save_results: "บันทึกผล",
+            self.btn_settings: "⚙ ตั้งค่า",
+        }
+        for widget, text in labels.items():
+            widget.setText(text)
+        self.btn_mute.setText("🔊 เสียงแจ้งเตือน")
+        self.btn_mute.setToolTip("เปิดหรือปิดเสียงไซเรนและเสียงพูดแจ้งเตือน")
+        self.btn_settings.setToolTip("ตั้งค่าระยะ โซน กล้อง โมเดล และเสียง")
+        actions = self.btn_settings.menu().actions()
+        menu_labels = [
+            "ตั้งค่าระยะเตือน",
+            "ตั้งค่าโซน",
+            "ตั้งค่ากล้อง",
+            "ตั้งค่าโมเดล",
+            "ตั้งค่าเสียงแจ้งเตือน",
+        ]
+        for action, text in zip(actions, menu_labels):
+            action.setText(text)
+        self.btn_previous_image.setText("← ก่อนหน้า")
+        self.btn_next_image.setText("ถัดไป →")
+        self.video.setText("ยังไม่ได้เลือกแหล่งภาพ\nเปิดกล้อง วิดีโอ หรือทดสอบรูปภาพ")
+        self.test_image_counter.setText("ยังไม่มีผลทดสอบ")
+        self.status_badge.setText("กำลังเริ่มระบบ")
+        self.alert.setHtml(
+            "<span style='color:#94a3b8;'>เปิดแหล่งภาพเพื่อเริ่มตรวจจับวัตถุ</span>"
+        )
 
     @staticmethod
     def _make_metric(title, value):
@@ -895,18 +975,30 @@ class MainWindow(QMainWindow):
             ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
             self.fps_metric.value_label.setText(f"{self.fps:.1f} / {ai_fps:.1f}")
             self.alert.setHtml(self.last_info)
-            nearest_danger = next(
-                (d for d in detections if d["status"] == "DANGER"), None
+            danger_detections = [d for d in detections if d["status"] == "DANGER"]
+            alert_detections = [
+                d for d in detections if d["status"] in ("DANGER", "WARNING")
+            ]
+            nearest_danger = min(
+                danger_detections, key=lambda d: d["dist"], default=None
+            )
+            # DANGER always takes priority over WARNING, even when a WARNING
+            # object is physically a little closer.
+            nearest_alert = nearest_danger or min(
+                alert_detections, key=lambda d: d["dist"], default=None
             )
             self.danger_alarm.set_active(nearest_danger is not None)
             self.voice_announcer.announce(
-                nearest_danger["label"] if nearest_danger else None,
-                nearest_danger["dist"] if nearest_danger else None,
+                nearest_alert["label"] if nearest_alert else None,
+                nearest_alert["dist"] if nearest_alert else None,
+                nearest_alert["status"] if nearest_alert else "SAFE",
             )
         return frame
 
     def on_yolo_result(self, info):
         self.last_info = info
+        if self.yolo is not None and self.yolo.model_ready:
+            self.set_status("พร้อมใช้งาน", "#22c55e")
         if self.test_mode and self.test_frame is not None:
             annotated = self._display_frame(
                 self.test_frame.copy(), draw_zone=False
@@ -950,14 +1042,16 @@ class MainWindow(QMainWindow):
         self.set_status("ตรวจจับผิดพลาด", "#ef4444")
 
     def open_distance_setting(self):
-        self.distance_win = DistanceSettingWindow()
-        self.distance_win.thresholds_saved.connect(self.on_thresholds_saved)
-        self.distance_win.show()
+        if self.distance_win is None:
+            self.distance_win = DistanceSettingWindow()
+            self.distance_win.thresholds_saved.connect(self.on_thresholds_saved)
+        self._show_single_settings_window(self.distance_win)
 
     def open_camera_setting(self):
-        self.camera_win = CameraSettingWindow()
-        self.camera_win.settings_saved.connect(self.on_camera_settings_saved)
-        self.camera_win.show()
+        if self.camera_win is None:
+            self.camera_win = CameraSettingWindow()
+            self.camera_win.settings_saved.connect(self.on_camera_settings_saved)
+        self._show_single_settings_window(self.camera_win)
 
     def on_camera_settings_saved(self, camera_index, focal_length):
         if self.yolo is not None:
@@ -969,9 +1063,10 @@ class MainWindow(QMainWindow):
         self.alert.setHtml(self.last_info)
 
     def open_model_setting(self):
-        self.model_win = ModelSettingWindow()
-        self.model_win.model_selected.connect(self.switch_model)
-        self.model_win.show()
+        if self.model_win is None:
+            self.model_win = ModelSettingWindow()
+            self.model_win.model_selected.connect(self.switch_model)
+        self._show_single_settings_window(self.model_win)
 
     def switch_model(self, relative_path):
         """Restart the detection thread on the newly selected model."""
@@ -989,6 +1084,7 @@ class MainWindow(QMainWindow):
             self.yolo.result_ready.connect(self.on_yolo_result)
             self.yolo.error_ready.connect(self.on_yolo_error)
             self.yolo.start()
+            QTimer.singleShot(1200, self.voice_announcer.preload)
             self.last_info = (
                 f"<span style='color:#22c55e;'>เปลี่ยนโมเดลเป็น \"{model_relative}\" แล้ว</span>"
             )
@@ -999,12 +1095,14 @@ class MainWindow(QMainWindow):
             self.set_status("โหลดโมเดลไม่สำเร็จ", "#ef4444")
 
     def open_alert_setting(self):
-        self.alert_win = AlertSettingWindow()
-        self.alert_win.settings_saved.connect(self.on_alert_settings_saved)
-        self.alert_win.show()
+        if self.alert_win is None:
+            self.alert_win = AlertSettingWindow()
+            self.alert_win.settings_saved.connect(self.on_alert_settings_saved)
+        self._show_single_settings_window(self.alert_win)
 
-    def on_alert_settings_saved(self, siren_enabled, voice_enabled):
+    def on_alert_settings_saved(self, siren_enabled, voice_enabled, voice_model):
         self.danger_alarm.set_enabled(siren_enabled)
+        self.voice_announcer.set_voice_model(voice_model)
         self.voice_announcer.set_enabled(voice_enabled)
         self._refresh_mute_button()
         self.last_info = (
@@ -1030,10 +1128,28 @@ class MainWindow(QMainWindow):
             image_path = TEMP_DIR / "zone_preview.jpg"
             cv2.imwrite(str(image_path), self.current_frame)
 
-        self.zone_win = ZoneSettingWindow(str(image_path) if image_path else None)
-        if self.yolo is not None:
-            self.zone_win.zone_saved.connect(self.yolo.invalidate_zone)
-        self.zone_win.show()
+        if self.zone_win is None or not self.zone_win.isVisible():
+            self.zone_win = ZoneSettingWindow(str(image_path) if image_path else None)
+            if self.yolo is not None:
+                self.zone_win.zone_saved.connect(self.yolo.invalidate_zone)
+        self._show_single_settings_window(self.zone_win)
+
+    def _show_single_settings_window(self, window):
+        """Keep settings focused: only one settings page is visible at a time."""
+        settings_windows = (
+            self.distance_win,
+            self.zone_win,
+            self.camera_win,
+            self.model_win,
+            self.alert_win,
+        )
+        for other in settings_windows:
+            if other is not None and other is not window:
+                other.hide()
+        window.setWindowModality(Qt.ApplicationModal)
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def closeEvent(self, event):
         self.close_camera()

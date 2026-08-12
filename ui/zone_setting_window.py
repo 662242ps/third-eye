@@ -28,6 +28,7 @@ APP_STYLE = """
 QMainWindow {
     background: #0f172a;
 }
+QWidget { font-family: 'Leelawadee UI'; }
 QLabel {
     color: #e5e7eb;
 }

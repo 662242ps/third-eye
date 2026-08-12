@@ -1,4 +1,5 @@
 {
-  "siren_enabled": true,
-  "voice_enabled": true
+  "siren_enabled": false,
+  "voice_enabled": true,
+  "voice_model": "th_m_1"
 }

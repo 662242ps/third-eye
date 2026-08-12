@@ -22,6 +22,7 @@ from vision.model_config import (
 
 APP_STYLE = """
 QMainWindow { background: #0f172a; }
+QWidget { font-family: 'Leelawadee UI'; }
 QLabel { color: #e5e7eb; }
 QFrame#card {
     background: #172033;
@@ -31,7 +32,7 @@ QFrame#card {
 QComboBox {
     background: #0b1220; color: #f8fafc;
     border: 1px solid #334155; border-radius: 10px;
-    padding: 8px 10px; font-size: 15px;
+    padding: 8px 10px; font-size: 15px; min-height: 24px;
 }
 QComboBox QAbstractItemView {
     background: #0b1220; color: #f8fafc;

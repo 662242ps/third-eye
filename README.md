@@ -40,15 +40,102 @@ thread with the new weights.
 
 ## Alert sound setting
 
-Open the gear menu and choose **ตั้งค่าเสียงแจ้งเตือน** to pick which DANGER
-alert channels are active: the looping siren, the Thai voice announcement,
-both, or neither. The choice is saved in `settings/alert_settings.json` and
-applies on top of the toolbar's 🔊/🔇 mute button. The voice announcement
-also skips repeating for the same object unless its distance has moved at
-least 3 m since it was last announced, so a vehicle parked at a steady
-range doesn't get re-announced every few seconds.
+Open the gear menu and choose **ตั้งค่าเสียงแจ้งเตือน** to pick which alert
+channels are active. The looping siren is DANGER-only; Thai voice announces
+both DANGER and WARNING with the object type and distance, while SAFE is silent.
+The voice also waits for a stable detection and skips repeating the same object
+unless its distance has moved at least 3 m, reducing false repeats from detector
+flicker.
+
+The runtime selects an installed Windows Speech voice whose culture is Thai
+(`th-*`) and never silently falls back to an English voice. If no Thai voice
+is installed, add Thai speech in Windows Language settings. Legacy MP3 clips
+are not used when a measured distance is available, so the app cannot silently
+announce an incomplete or English distance. Distances are converted to Thai
+words (for example, 15.8 becomes “สิบห้า เมตร” in the voice). The bundled
+voice is intentionally slowed down and pauses around the distance for clarity.
+
+For deployment to other computers, the project includes an offline Thai VachanaTTS
+female Thai ONNX voice (`th_f_2`) in `tts/voices/`. Install the Python dependencies from
+`requirements.txt`; the application uses this bundled voice before checking
+other TTS backends or Windows Speech.
 
 ## Notes
+
+## วิธีใช้งานแบบควบคุมได้
+
+### เข้า environment `cvce`
+
+เปิด PowerShell ในโฟลเดอร์โปรเจกต์:
+
+```powershell
+cd C:\CS3\project\pg
+.\cvce\Scripts\Activate.ps1
+```
+
+ถ้า PowerShell ปิดกั้นสคริปต์ ให้ใช้เฉพาะหน้าต่างนี้:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\cvce\Scripts\Activate.ps1
+```
+
+ตรวจสอบ environment:
+
+```powershell
+where.exe python
+python --version
+```
+
+ผลลัพธ์ควรชี้ไปที่ `cvce\Scripts\python.exe` จากนั้นติดตั้งและเปิดโปรแกรม:
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python main.py
+```
+
+### การควบคุมในหน้าหลัก
+
+| ปุ่ม | หน้าที่ |
+|---|---|
+| เปิดกล้อง | เริ่มตรวจจับจากกล้อง |
+| ปิดกล้อง | หยุดกล้องและหยุดการตรวจจับ |
+| เปิดวิดีโอ | เลือกไฟล์วิดีโอเพื่อตรวจจับ |
+| ทดสอบรูปภาพ | ตรวจจับภาพหนึ่งภาพหรือหลายภาพ |
+| บันทึกผล | บันทึกภาพผลลัพธ์และ CSV |
+| เสียงแจ้งเตือน | ปิดหรือเปิดไซเรนและเสียงพูด |
+| ตั้งค่า | ตั้งค่าระยะ โซน กล้อง โมเดล และเสียง |
+
+### หลักการแจ้งเตือน
+
+- ระยะอันตราย: พูด `อันตะราย มี [วัตถุ] อยู่ในระยะ [จำนวนเต็ม] เมตร`
+- ระยะระวัง: พูด `ระวัง มี [วัตถุ] อยู่ในระยะ [จำนวนเต็ม] เมตร`
+- ระยะปลอดภัย: ไม่พูดแจ้งเตือน
+- วัตถุอันตรายมีลำดับความสำคัญสูงกว่าวัตถุระวัง
+- ระบบลดการพูดซ้ำและรอผลตรวจจับให้คงที่ก่อนแจ้งเตือน
+
+## เครดิตโมเดลเสียงภาษาไทย
+
+ไฟล์เสียงภาษาไทยใน `tts/voices/` ใช้โมเดล **VachanaTTS** แบบ ONNX จาก:
+
+- [VachanaTTS บน Hugging Face](https://huggingface.co/VIZINTZOR/VachanaTTS)
+- [VachanaTTS source repository](https://github.com/VYNCX/VachanaTTS)
+- [PyThaiTTS](https://github.com/PyThaiNLP/PyThaiTTS)
+
+โปรดตรวจสอบ license จากแหล่งต้นทางก่อนนำโปรแกรมหรือโมเดลไปแจกจ่ายเชิงพาณิชย์
+
+## Performance and deployment notes
+
+- YOLO model loading is performed by its worker thread so the interface can
+  remain responsive while the model initializes.
+- Detection distance is an estimate based on bounding-box height, calibrated
+  focal length, and approximate object height. Calibrate the camera before
+  relying on the distance for safety decisions.
+- Thai TTS models are local ONNX files. Only the selected voice model should
+  be loaded; switching voices may briefly use CPU while the new model loads in
+  the background.
+- Run the basic logic checks with `python -m unittest discover tests`.
 
 - Configure the polygon in **Zone Setting**. The active zone is saved in `zones/active.txt`.
 - Camera index and focal-length calibration are available from the gear menu
