@@ -21,16 +21,27 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ui.alert_setting_window import AlertSettingWindow
 from ui.camera_setting_window import CameraSettingWindow
 from ui.distance_setting_window import DistanceSettingWindow
+from ui.model_setting_window import ModelSettingWindow
 from ui.zone_setting_window import ZoneSettingWindow
+from vision.alert_config import load_alert_settings
+from vision.alert_sound import DangerAlarm
 from vision.camera_config import load_camera_settings
 from vision.distance_config import load_distance_thresholds
+from vision.model_config import load_model_settings
+from vision.voice_alert import VoiceAnnouncer
 from vision.yolo_thread import YoloThread
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMP_DIR = PROJECT_ROOT / "tmp"
+# Capture/display loop interval. CPU inference can't keep up with 30 fps
+# (33 ms) anyway, so polling that fast just burns CPU on resize/color
+# convert/redraw for frames the AI thread throws away. ~22 fps is still
+# smooth for a monitoring app and noticeably lighter on the UI thread.
+FRAME_INTERVAL_MS = 45
 
 APP_STYLE = """
 QMainWindow {
@@ -156,6 +167,8 @@ class MainWindow(QMainWindow):
         self.zone_win = None
         self.distance_win = None
         self.camera_win = None
+        self.model_win = None
+        self.alert_win = None
         self.test_frame = None
         self.test_mode = False
         self.test_queue = []
@@ -166,20 +179,27 @@ class MainWindow(QMainWindow):
         self.video_total_frames = 0
         self.video_fps = 0.0
         self.video_slider_dragging = False
+        self.danger_alarm = DangerAlarm()
+        self.voice_announcer = VoiceAnnouncer()
+        alert_settings = load_alert_settings()
+        self.danger_alarm.set_enabled(alert_settings["siren_enabled"])
+        self.voice_announcer.set_enabled(alert_settings["voice_enabled"])
 
         self._build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.update_distance_status()
+        self._refresh_mute_button()
 
+        model_relative, model_path = load_model_settings()
         try:
-            self.yolo = YoloThread()
+            self.yolo = YoloThread(model_path=model_path)
             self.yolo.result_ready.connect(self.on_yolo_result)
             self.yolo.error_ready.connect(self.on_yolo_error)
             self.yolo.start()
             self.set_status("พร้อมใช้งาน", "#22c55e")
         except Exception as error:
-            self.alert.setText(f"Cannot load YOLO model: {error}")
+            self.alert.setText(f"Cannot load YOLO model ({model_relative}): {error}")
             self.set_status("โหลดโมเดลไม่สำเร็จ", "#ef4444")
 
     def _build_ui(self):
@@ -238,6 +258,12 @@ class MainWindow(QMainWindow):
         self.btn_save_results = QPushButton("บันทึกผล")
         self.btn_save_results.setObjectName("secondaryButton")
         self.btn_save_results.setEnabled(False)
+        self.btn_mute = QPushButton("🔊 เสียงเตือน")
+        self.btn_mute.setObjectName("secondaryButton")
+        self.btn_mute.setCheckable(True)
+        self.btn_mute.setToolTip(
+            "ปิด/เปิดเสียงไซเรนและเสียงพูดแจ้งเตือนเมื่ออยู่ในระยะอันตราย"
+        )
         self.btn_settings = QPushButton("ตั้งค่า")
         self.btn_settings.setObjectName("settingButton")
         self.btn_settings.setToolTip("การตั้งค่า")
@@ -248,6 +274,8 @@ class MainWindow(QMainWindow):
             toolbar_layout.addWidget(button)
         self.btn_save_results.setFixedSize(130, 42)
         toolbar_layout.addWidget(self.btn_save_results)
+        self.btn_mute.setFixedSize(130, 42)
+        toolbar_layout.addWidget(self.btn_mute)
 
         toolbar_layout.addStretch()
         self.btn_settings.setFixedSize(120, 42)
@@ -258,13 +286,18 @@ class MainWindow(QMainWindow):
         self.btn_video.clicked.connect(self.open_video)
         self.btn_test.clicked.connect(self.open_test_image)
         self.btn_save_results.clicked.connect(self.save_test_results)
+        self.btn_mute.toggled.connect(self.toggle_alarm_mute)
         settings_menu = QMenu(self)
         distance_action = settings_menu.addAction("ตั้งค่าระยะ")
         zone_action = settings_menu.addAction("ตั้งค่าโซน")
         camera_action = settings_menu.addAction("ตั้งค่ากล้อง")
+        model_action = settings_menu.addAction("ตั้งค่าโมเดล")
+        alert_action = settings_menu.addAction("ตั้งค่าเสียงแจ้งเตือน")
         distance_action.triggered.connect(self.open_distance_setting)
         zone_action.triggered.connect(self.open_zone_setting)
         camera_action.triggered.connect(self.open_camera_setting)
+        model_action.triggered.connect(self.open_model_setting)
+        alert_action.triggered.connect(self.open_alert_setting)
         self.btn_settings.setMenu(settings_menu)
 
         content = QFrame(objectName="content")
@@ -389,6 +422,28 @@ class MainWindow(QMainWindow):
         card.value_label = metric_value
         return card
 
+    def toggle_alarm_mute(self, muted):
+        self.danger_alarm.set_muted(muted)
+        self.voice_announcer.set_muted(muted)
+        self._refresh_mute_button()
+
+    def _refresh_mute_button(self):
+        """Reflect hardware availability, the alert-settings on/off state,
+        and the mute toggle itself on the toolbar button."""
+        unavailable = not self.danger_alarm.available and not self.voice_announcer.available
+        disabled_in_settings = not self.danger_alarm.enabled and not self.voice_announcer.enabled
+
+        if unavailable or disabled_in_settings:
+            self.btn_mute.setChecked(True)
+            self.btn_mute.setEnabled(False)
+            self.btn_mute.setText(
+                "🔇 ไม่มีเสียง" if unavailable else "🔇 ปิดไว้ในตั้งค่า"
+            )
+            return
+
+        self.btn_mute.setEnabled(True)
+        self.btn_mute.setText("🔇 ปิดเสียง" if self.btn_mute.isChecked() else "🔊 เสียงเตือน")
+
     def set_status(self, text, color):
         self.status_badge.setText(text)
         self.status_badge.setStyleSheet(
@@ -422,7 +477,7 @@ class MainWindow(QMainWindow):
         self.last_time = time.time()
         self.source_name = f"Camera {camera_index}"
         self.source_metric.value_label.setText(self.source_name)
-        self.timer.start(33)
+        self.timer.start(FRAME_INTERVAL_MS)
         self.alert.setText("เปิดกล้องแล้ว")
         self.set_status("กำลังทำงาน", "#16a34a")
 
@@ -461,7 +516,7 @@ class MainWindow(QMainWindow):
         self.last_time = time.time()
         self.source_name = Path(path).name
         self.source_metric.value_label.setText(self.source_name)
-        self.timer.start(33)
+        self.timer.start(FRAME_INTERVAL_MS)
         self.alert.setText("เปิดวิดีโอแล้ว")
         self.set_status("กำลังทำงาน", "#16a34a")
 
@@ -500,7 +555,7 @@ class MainWindow(QMainWindow):
         self.last_time = time.time()
         self.update_frame()
         if self.cap is not None:
-            self.timer.start(33)
+            self.timer.start(FRAME_INTERVAL_MS)
 
     def open_test_image(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -732,6 +787,8 @@ class MainWindow(QMainWindow):
 
     def close_camera(self, clear_display=True):
         self.timer.stop()
+        self.danger_alarm.stop()
+        self.voice_announcer.stop()
         self.test_mode = False
         self.test_frame = None
         self.test_queue = []
@@ -838,6 +895,14 @@ class MainWindow(QMainWindow):
             ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
             self.fps_metric.value_label.setText(f"{self.fps:.1f} / {ai_fps:.1f}")
             self.alert.setHtml(self.last_info)
+            nearest_danger = next(
+                (d for d in detections if d["status"] == "DANGER"), None
+            )
+            self.danger_alarm.set_active(nearest_danger is not None)
+            self.voice_announcer.announce(
+                nearest_danger["label"] if nearest_danger else None,
+                nearest_danger["dist"] if nearest_danger else None,
+            )
         return frame
 
     def on_yolo_result(self, info):
@@ -847,7 +912,7 @@ class MainWindow(QMainWindow):
                 self.test_frame.copy(), draw_zone=False
             )
             detections = (
-                self.yolo.get_detections() if self.yolo is not None else []
+                self.yolo.get_detections(predict=False) if self.yolo is not None else []
             )
             self.test_results.append(
                 {
@@ -903,6 +968,52 @@ class MainWindow(QMainWindow):
         )
         self.alert.setHtml(self.last_info)
 
+    def open_model_setting(self):
+        self.model_win = ModelSettingWindow()
+        self.model_win.model_selected.connect(self.switch_model)
+        self.model_win.show()
+
+    def switch_model(self, relative_path):
+        """Restart the detection thread on the newly selected model."""
+        self.close_camera(clear_display=False)
+
+        if self.yolo is not None:
+            self.yolo.result_ready.disconnect(self.on_yolo_result)
+            self.yolo.error_ready.disconnect(self.on_yolo_error)
+            self.yolo.stop()
+            self.yolo = None
+
+        model_relative, model_path = load_model_settings()
+        try:
+            self.yolo = YoloThread(model_path=model_path)
+            self.yolo.result_ready.connect(self.on_yolo_result)
+            self.yolo.error_ready.connect(self.on_yolo_error)
+            self.yolo.start()
+            self.last_info = (
+                f"<span style='color:#22c55e;'>เปลี่ยนโมเดลเป็น \"{model_relative}\" แล้ว</span>"
+            )
+            self.alert.setHtml(self.last_info)
+            self.set_status("พร้อมใช้งาน", "#22c55e")
+        except Exception as error:
+            self.alert.setText(f"Cannot load YOLO model ({model_relative}): {error}")
+            self.set_status("โหลดโมเดลไม่สำเร็จ", "#ef4444")
+
+    def open_alert_setting(self):
+        self.alert_win = AlertSettingWindow()
+        self.alert_win.settings_saved.connect(self.on_alert_settings_saved)
+        self.alert_win.show()
+
+    def on_alert_settings_saved(self, siren_enabled, voice_enabled):
+        self.danger_alarm.set_enabled(siren_enabled)
+        self.voice_announcer.set_enabled(voice_enabled)
+        self._refresh_mute_button()
+        self.last_info = (
+            "<span style='color:#e5e7eb;'>บันทึกการตั้งค่าเสียงแจ้งเตือนแล้ว: "
+            f"ไซเรน {'เปิด' if siren_enabled else 'ปิด'}, "
+            f"เสียงพูด {'เปิด' if voice_enabled else 'ปิด'}</span>"
+        )
+        self.alert.setHtml(self.last_info)
+
     def on_thresholds_saved(self, danger, warning):
         self.update_distance_status()
         if self.yolo is not None:
@@ -926,6 +1037,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.close_camera()
+        self.danger_alarm.stop()
+        self.voice_announcer.stop()
         if self.yolo is not None and self.yolo.isRunning():
             if not self.yolo.stop():
                 self.alert.setText("กำลังรอให้ระบบตรวจจับหยุดทำงาน...")

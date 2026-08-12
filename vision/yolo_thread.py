@@ -43,24 +43,42 @@ CLASS_ALIASES = {
 
 # Practical confidence thresholds for real webcam/video use.
 # Higher values reduce false positives. Lower values detect more objects but may be noisy.
+conf=0.7
+print(conf)
 CLASS_CONF = {
-    "person": 0.60,
-    "car": 0.70,
-    "truck": 0.70,
-    "motorcycle": 0.60,
-    "bus": 0.70,
+    "person": conf,
+    "car": conf,
+    "truck": conf,
+    "motorcycle": conf,
+    
 }
 
 # Keep inference input identical to the square image size used for training.
 MODEL_IMGSZ = 640
-MODEL_IOU = 0.45
+MODEL_IOU = 0.8
+# Road scenes rarely have more than a handful of relevant objects in frame;
+# capping detections lower trims NMS/post-processing work.
 MODEL_MAX_DET = 20
 
 MIN_BOX_HEIGHT = 14
 SMOOTHING_ALPHA = 0.35
-TRACK_IOU_THRESHOLD = 0.30
+# Lowered from 0.30: combined with velocity-based prediction below, a track
+# only needs partial overlap with a fast object's *predicted* box, not its
+# raw last-seen box, so this can be a little more forgiving without pairing
+# up unrelated detections.
+TRACK_IOU_THRESHOLD = 0.22
 DANGER_HYSTERESIS_M = 0.60
 WARNING_HYSTERESIS_M = 1.00
+
+# How responsively the estimated box velocity reacts to the newest motion
+# vs. the previous estimate. Higher = tracks sudden speed changes faster but
+# is noisier frame-to-frame.
+VELOCITY_SMOOTHING_ALPHA = 0.5
+# Cap how far ahead a box position is ever extrapolated (both for matching a
+# fast object to its previous track, and for drawing between inference
+# results). Beyond this the track is treated as stale and shown/matched at
+# its last known position instead of guessing further.
+MAX_PREDICTION_S = 0.4
 
 STATUS_STYLE = {
     "DANGER": {"color": (0, 0, 255), "html": "#ef4444", "thai": "อันตราย"},
@@ -106,11 +124,12 @@ class YoloThread(QThread):
     result_ready = pyqtSignal(str)
     error_ready = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, model_path=None):
         super().__init__()
 
-        if not MODEL_FILE.is_file():
-            raise FileNotFoundError(f"Model file not found: {MODEL_FILE}")
+        self.model_path = Path(model_path) if model_path else MODEL_FILE
+        if not self.model_path.is_file():
+            raise FileNotFoundError(f"Model file not found: {self.model_path}")
 
         self.device = _select_device()
         self.use_half = self.device == "cuda"
@@ -121,7 +140,9 @@ class YoloThread(QThread):
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
             else:
-                cpu_threads = max(1, min(8, os.cpu_count() or 2))
+                # Match main.py's OMP/MKL cap -- see the comment there for why
+                # 4 threads, not all available cores.
+                cpu_threads = max(1, min(4, os.cpu_count() or 2))
                 torch.set_num_threads(cpu_threads)
                 try:
                     torch.set_num_interop_threads(1)
@@ -131,7 +152,7 @@ class YoloThread(QThread):
                     torch.backends.mkldnn.enabled = True
             if hasattr(torch, "set_float32_matmul_precision"):
                 torch.set_float32_matmul_precision("high")
-        self.model = YOLO(str(MODEL_FILE))
+        self.model = YOLO(str(self.model_path))
         self.model.to(self.device)
         try:
             self.model.fuse()
@@ -225,9 +246,46 @@ class YoloThread(QThread):
         with self._lock:
             return None if self.zone is None else self.zone.copy()
 
-    def get_detections(self):
+    def get_detections(self, predict=True):
+        """Return the latest detections.
+
+        With `predict=True` (the default, used for live drawing) each box is
+        advanced along its estimated velocity to the current moment, so a
+        fast-moving object's box keeps pace with the video between inference
+        results instead of freezing at its last detected position. Batch/
+        CSV export code should pass `predict=False` to keep the exact
+        detected box.
+        """
         with self._lock:
-            return [detection.copy() for detection in self.last_detections]
+            detections = [detection.copy() for detection in self.last_detections]
+        if not predict:
+            return detections
+
+        now = time.monotonic()
+        for detection in detections:
+            detection["box"] = self._predict_box(detection, now)
+        return detections
+
+    @staticmethod
+    def _predict_box(track, now):
+        timestamp = track.get("timestamp")
+        vx, vy = track.get("velocity", (0.0, 0.0))
+        if timestamp is None or (vx == 0.0 and vy == 0.0):
+            return track["box"]
+
+        elapsed = min(max(now - timestamp, 0.0), MAX_PREDICTION_S)
+        if elapsed <= 0:
+            return track["box"]
+
+        x1, y1, x2, y2 = track["box"]
+        shift_x = vx * elapsed
+        shift_y = vy * elapsed
+        return (
+            int(round(x1 + shift_x)),
+            int(round(y1 + shift_y)),
+            int(round(x2 + shift_x)),
+            int(round(y2 + shift_y)),
+        )
 
     def run(self):
         while not self._stop_requested.is_set():
@@ -320,6 +378,10 @@ class YoloThread(QThread):
 
         detections = []
         zone = self.get_zone() if use_zone else None
+        # Objects off to the side project onto a shorter "straight-ahead"
+        # depth than their true (slant) distance from the camera; correct
+        # for that using the horizontal offset from the frame's center.
+        principal_x = frame.shape[1] / 2.0
 
         for result in results:
             for box in result.boxes:
@@ -338,9 +400,10 @@ class YoloThread(QThread):
                 if zone is not None and cv2.pointPolygonTest(zone, bottom_center, False) < 0:
                     continue
 
-                raw_distance = (
-                    REAL_HEIGHT[label] * self._focal_length
-                ) / box_height
+                depth = (REAL_HEIGHT[label] * self._focal_length) / box_height
+                box_center_x = (x1 + x2) / 2.0
+                lateral_ratio = (box_center_x - principal_x) / self._focal_length
+                raw_distance = depth * (1 + lateral_ratio ** 2) ** 0.5
                 detection = {
                     "box": (x1, y1, x2, y2),
                     "label": label,
@@ -355,9 +418,12 @@ class YoloThread(QThread):
     def _smooth_detections(self, detections, danger_dist, warning_dist):
         updated = []
         used_previous = set()
+        now = time.monotonic()
 
         for detection in detections:
-            previous_index, previous = self._find_previous_detection(detection, used_previous)
+            previous_index, previous = self._find_previous_detection(
+                detection, used_previous, now
+            )
 
             if previous is not None:
                 smoothed_distance = (
@@ -365,10 +431,12 @@ class YoloThread(QThread):
                     + (1.0 - SMOOTHING_ALPHA) * previous["raw_dist"]
                 )
                 previous_status = previous["status"]
+                velocity = self._estimate_velocity(previous, detection, now)
                 used_previous.add(previous_index)
             else:
                 smoothed_distance = detection["raw_dist"]
                 previous_status = None
+                velocity = (0.0, 0.0)
 
             status = self._classify_distance(
                 smoothed_distance,
@@ -388,13 +456,37 @@ class YoloThread(QThread):
                 "status_thai": style["thai"],
                 "color": style["color"],
                 "html": style["html"],
+                "timestamp": now,
+                "velocity": velocity,
             }
             updated.append(updated_detection)
 
         self._track_memory = updated
         return updated
 
-    def _find_previous_detection(self, detection, used_previous):
+    @staticmethod
+    def _estimate_velocity(previous, detection, now):
+        """Smoothed box-center velocity in px/sec, used to predict a fast
+        object's position between inference results (see _predict_box)."""
+        previous_timestamp = previous.get("timestamp")
+        if previous_timestamp is None:
+            return (0.0, 0.0)
+
+        dt = now - previous_timestamp
+        if dt <= 1e-3:
+            return previous.get("velocity", (0.0, 0.0))
+
+        px1, py1, px2, py2 = previous["box"]
+        x1, y1, x2, y2 = detection["box"]
+        raw_vx = ((x1 + x2) / 2.0 - (px1 + px2) / 2.0) / dt
+        raw_vy = ((y1 + y2) / 2.0 - (py1 + py2) / 2.0) / dt
+
+        prev_vx, prev_vy = previous.get("velocity", (0.0, 0.0))
+        vx = VELOCITY_SMOOTHING_ALPHA * raw_vx + (1.0 - VELOCITY_SMOOTHING_ALPHA) * prev_vx
+        vy = VELOCITY_SMOOTHING_ALPHA * raw_vy + (1.0 - VELOCITY_SMOOTHING_ALPHA) * prev_vy
+        return (vx, vy)
+
+    def _find_previous_detection(self, detection, used_previous, now):
         best_index = None
         best_previous = None
         best_iou = 0.0
@@ -405,7 +497,13 @@ class YoloThread(QThread):
             if previous["label"] != detection["label"]:
                 continue
 
-            iou = _box_iou(previous["box"], detection["box"])
+            # Match against where this track is predicted to be *now*, not
+            # where it was last seen -- otherwise a fast-moving object
+            # quickly slides out of raw IoU range and the track is dropped
+            # (losing hysteresis/velocity continuity) even though it's the
+            # same object.
+            predicted_box = self._predict_box(previous, now)
+            iou = _box_iou(predicted_box, detection["box"])
             if iou > best_iou:
                 best_iou = iou
                 best_index = index
