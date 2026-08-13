@@ -16,13 +16,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from vision.frame_utils import letterbox
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ZONE_DIR = PROJECT_ROOT / "zones"
 ACTIVE_ZONE = ZONE_DIR / "active.txt"
 DEFAULT_ZONE = ZONE_DIR / "default.txt"
-VIEW_W = 1000
-VIEW_H = 600
+VIEW_W = 640
+VIEW_H = 640
 
 APP_STYLE = """
 QMainWindow {
@@ -81,7 +83,7 @@ class ZoneSettingWindow(QMainWindow):
     def __init__(self, image_path=None):
         super().__init__()
         self.setWindowTitle("Third Eye - ตั้งค่าโซนตรวจจับ")
-        self.resize(1360, 780)
+        self.resize(1120, 840)
         self.setStyleSheet(APP_STYLE)
         ZONE_DIR.mkdir(exist_ok=True)
 
@@ -89,9 +91,9 @@ class ZoneSettingWindow(QMainWindow):
         image = cv2.imread(str(image_file)) if image_file and image_file.is_file() else None
         if image is None:
             image = np.zeros((VIEW_H, VIEW_W, 3), dtype=np.uint8)
-        self.image = cv2.resize(image, (VIEW_W, VIEW_H))
+        self.image = letterbox(image, (VIEW_W, VIEW_H))
 
-        self.zone_points = [[100, 550], [500, 180], [900, 550]]
+        self.zone_points = [[64, 560], [320, 140], [576, 560]]
         self.drag_index = None
         self.status = None
         self._build_ui()
@@ -215,6 +217,15 @@ class ZoneSettingWindow(QMainWindow):
             rgb_frame.data, VIEW_W, VIEW_H, 3 * VIEW_W, QImage.Format_RGB888
         ).copy()
         self.image_label.setPixmap(QPixmap.fromImage(image))
+
+    def set_image(self, image_path=None):
+        """Reload the preview when this standalone window is reused."""
+        image_file = Path(image_path) if image_path else None
+        image = cv2.imread(str(image_file)) if image_file and image_file.is_file() else None
+        if image is None:
+            image = np.zeros((VIEW_H, VIEW_W, 3), dtype=np.uint8)
+        self.image = letterbox(image, (VIEW_W, VIEW_H))
+        self.update_view()
 
     def mouse_press(self, event):
         x, y = event.pos().x(), event.pos().y()

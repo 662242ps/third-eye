@@ -35,6 +35,7 @@ from ui.icons import icon
 from vision.alert_config import load_alert_settings, save_alert_settings
 from vision.camera_config import load_camera_settings, save_camera_settings
 from vision.distance_config import load_distance_thresholds, save_distance_thresholds
+from vision.frame_utils import letterbox
 from vision.model_config import (
     import_model_file,
     list_available_models,
@@ -47,8 +48,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ZONE_DIR = PROJECT_ROOT / "zones"
 ACTIVE_ZONE = ZONE_DIR / "active.txt"
 DEFAULT_ZONE = ZONE_DIR / "default.txt"
-VIEW_W = 800
-VIEW_H = 480
+# Keep the editor coordinate system identical to the 640x640 inference frame.
+# This avoids visually stretching the road and choosing a zone in the wrong
+# place when the saved normalized coordinates are applied to live detection.
+VIEW_W = 640
+VIEW_H = 640
 
 
 STYLE = """
@@ -254,7 +258,8 @@ class AudioPage(BasePage):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(8)
-        self.siren = QCheckBox("เสียงไซเรนเมื่ออยู่ในระยะอันตราย")
+        self.siren = QCheckBox("เสียงไซเรนเมื่ออยู่ในระยะอันตรายและระวัง")
+        self.siren.setToolTip("ระวัง: เสียงเบาและเตือนห่างกว่า | อันตราย: เสียงดังและเตือนถี่กว่า")
         self.voice = QCheckBox("เสียงพูดแจ้งเตือนพร้อมชนิดวัตถุและระยะ")
         self.combo = QComboBox()
         voice_dir = PROJECT_ROOT / "tts" / "voices"
@@ -289,12 +294,12 @@ class ZonePage(BasePage):
     def __init__(self, image_path=None):
         super().__init__("โซนตรวจจับ", "ลากจุดควบคุมบนภาพเพื่อกำหนดพื้นที่ที่ต้องการตรวจจับ")
         self.image = self._load_image(image_path)
-        self.points = [[80, 430], [400, 140], [720, 430]]
+        self.points = [[64, 560], [320, 140], [576, 560]]
         self.drag_index = None
         content = QHBoxLayout()
         content.setSpacing(16)
         self.image_label = QLabel(alignment=Qt.AlignCenter)
-        self.image_label.setMinimumSize(620, 360)
+        self.image_label.setMinimumSize(520, 520)
         self.image_label.setStyleSheet("background:#020617; border:1px solid #26364D; border-radius:10px;")
         self.image_label.mousePressEvent = self.mouse_press
         self.image_label.mouseMoveEvent = self.mouse_move
@@ -327,7 +332,12 @@ class ZonePage(BasePage):
         image = cv2.imread(str(image_path)) if image_path and Path(image_path).is_file() else None
         if image is None:
             image = np.zeros((VIEW_H, VIEW_W, 3), dtype=np.uint8)
-        return cv2.resize(image, (VIEW_W, VIEW_H))
+        return letterbox(image, (VIEW_W, VIEW_H))
+
+    def set_image(self, image_path=None):
+        """Reload the preview when the parent window reuses this page."""
+        self.image = self._load_image(image_path)
+        self.update_view()
 
     def update_view(self):
         frame = self.image.copy()
@@ -345,7 +355,7 @@ class ZonePage(BasePage):
         self.image_label.setPixmap(QPixmap.fromImage(image).scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _image_position(self, event):
-        """Convert the displayed, aspect-fit image coordinate to 800x480."""
+        """Convert the displayed, aspect-fit image coordinate to 640x640."""
         pixmap = self.image_label.pixmap()
         if pixmap is None or pixmap.isNull():
             return None
@@ -454,8 +464,8 @@ class SettingsWindow(QMainWindow):
     def __init__(self, image_path=None):
         super().__init__()
         self.setWindowTitle("Third Eye - ตั้งค่าระบบ")
-        self.resize(1180, 760)
-        self.setMinimumSize(980, 650)
+        self.resize(1240, 840)
+        self.setMinimumSize(1100, 760)
         self.setStyleSheet(STYLE)
         self.pages = []
         self._build_ui(image_path)
@@ -526,6 +536,10 @@ class SettingsWindow(QMainWindow):
         footer_layout.addWidget(save)
         layout.addWidget(footer)
         self.setCentralWidget(root)
+
+    def set_zone_image(self, image_path=None):
+        """Refresh the zone image whenever the settings window is reopened."""
+        self.zone_page.set_image(image_path)
 
     def apply_all(self):
         for page in self.pages:

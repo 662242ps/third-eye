@@ -72,7 +72,7 @@ class AlertSettingWindow(QMainWindow):
         title = QLabel("รูปแบบเสียงแจ้งเตือนเมื่อพบวัตถุใกล้")
         title.setFont(QFont("Arial", 17, QFont.Bold))
         hint = QLabel(
-            "เลือกเสียงไซเรนสำหรับระดับอันตราย และเสียงพูดสำหรับระดับอันตราย/ระวัง "
+            "เลือกเสียงไซเรนสำหรับระดับอันตราย/ระวัง และเสียงพูดสำหรับระดับอันตราย/ระวัง "
             "โดยเสียงพูดจะแจ้งชนิดวัตถุและระยะทาง (ระดับปลอดภัยจะไม่มีเสียง)"
         )
         hint.setWordWrap(True)
@@ -83,7 +83,7 @@ class AlertSettingWindow(QMainWindow):
         card_layout.setContentsMargins(24, 22, 24, 22)
         card_layout.setSpacing(16)
 
-        self.siren_check = QCheckBox("🚨  เสียงไซเรน (สัญญาณเตือน)")
+        self.siren_check = QCheckBox("🚨  เสียงไซเรน (อันตรายดัง/ถี่กว่า ระวังเบา/ห่างกว่า)")
         self.voice_check = QCheckBox("🗣️  เสียงพูดแจ้งเตือน (ระบุชนิดวัตถุ)")
         card_layout.addWidget(self.siren_check)
         card_layout.addWidget(self.voice_check)
@@ -119,14 +119,6 @@ class AlertSettingWindow(QMainWindow):
         layout.addWidget(card)
         layout.addStretch()
         layout.addWidget(save_button)
-
-    def _load_values(self):
-        settings = load_alert_settings()
-        self.siren_check.setChecked(settings["siren_enabled"])
-        self.voice_check.setChecked(settings["voice_enabled"])
-        index = self.voice_model_combo.findData(settings["voice_model"])
-        if index >= 0:
-            self.voice_model_combo.setCurrentIndex(index)
 
     def save_values(self):
         settings = save_alert_settings(

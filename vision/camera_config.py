@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 
@@ -18,7 +19,7 @@ def _normalize(data):
         focal_length = float(data.get("focal_length", 800.0))
     except (TypeError, ValueError, AttributeError):
         return DEFAULT_CAMERA_SETTINGS.copy()
-    if focal_length <= 0:
+    if not math.isfinite(focal_length) or focal_length <= 0:
         focal_length = DEFAULT_CAMERA_SETTINGS["focal_length"]
     return {
         "camera_index": camera_index,

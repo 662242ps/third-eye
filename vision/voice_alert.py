@@ -1,4 +1,4 @@
-"""Thai voice announcements naming the nearest DANGER-level object.
+"""Thai voice announcements for the nearest WARNING/DANGER object.
 
 Speech clips are pre-generated Thai audio (see assets/voice/*.mp3, made
 with gTTS at build time) so the app stays fully offline at runtime. They
@@ -8,8 +8,10 @@ extra audio library or ffmpeg install is required.
 """
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from importlib.util import find_spec
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +21,7 @@ TTS_EXE = TTS_DIR / "thai_tts.exe"
 PIPER_EXE = TTS_DIR / "piper.exe"
 PIPER_MODEL = TTS_DIR / "thai_voice.onnx"
 VACHANA_CONFIG = TTS_DIR / "voices" / "speaker_config.json"
-TEMP_TTS_WAV = TTS_DIR / "alert_runtime.wav"
+TEMP_TTS_DIR = Path(tempfile.gettempdir()) / "third_eye_tts"
 # VachanaTTS uses a larger length scale for slower speech.
 SPEECH_LENGTH_SCALE = 1.3
 SPEECH_VOLUME = 1.2
@@ -112,6 +114,7 @@ class VoiceAnnouncer:
         self._preload_thread = None
         self._voice_model = "th_m_1"
         self._vachana_model = TTS_DIR / "voices" / "th_m_1.onnx"
+        self._vachana_available = None
         self._voice_generation = 0
 
         if sys.platform == "win32" and VOICE_DIR.is_dir():
@@ -127,11 +130,15 @@ class VoiceAnnouncer:
         return self._mci is not None or self._bundled_tts_available()
 
     def _bundled_tts_available(self):
-        return (
-            (self._vachana_model.is_file() and VACHANA_CONFIG.is_file())
-            or TTS_EXE.is_file()
-            or (PIPER_EXE.is_file() and PIPER_MODEL.is_file())
-        )
+        if self._vachana_model.is_file() and VACHANA_CONFIG.is_file():
+            if self._vachana_available is None:
+                try:
+                    self._vachana_available = find_spec("vachanatts.voice") is not None
+                except (ImportError, AttributeError, ValueError):
+                    self._vachana_available = False
+            if self._vachana_available:
+                return True
+        return TTS_EXE.is_file() or (PIPER_EXE.is_file() and PIPER_MODEL.is_file())
 
     def set_voice_model(self, model_name):
         model_name = str(model_name or "th_m_1").strip()
@@ -147,6 +154,7 @@ class VoiceAnnouncer:
             self._voice_model = model_name
             self._vachana_model = model_path
             self._vachana_voice = None
+            self._vachana_available = None
             self.preload()
 
     @property
@@ -259,9 +267,11 @@ class VoiceAnnouncer:
                 if self._speech_process and self._speech_process.poll() is None:
                     self._speech_process.terminate()
 
-        # Legacy clips do not contain a distance. Only use them when there is
-        # no measured distance (for example, a manually-triggered generic alert).
-        if distance is not None:
+        # The bundled legacy clips are explicitly recorded for DANGER and do
+        # not contain a distance. Never play one for WARNING, otherwise a
+        # warning can be announced with the wrong severity. WARNING remains
+        # silent when dynamic Thai TTS is unavailable.
+        if status != "DANGER":
             return
         path = VOICE_DIR / f"{label}_danger.mp3"
         if not path.is_file():
@@ -310,8 +320,8 @@ class VoiceAnnouncer:
             with self._speech_lock:
                 if generation == self._voice_generation:
                     self._vachana_voice = loaded_voice
-        except (ImportError, OSError, RuntimeError):
-            pass
+        except (ImportError, OSError, RuntimeError, ValueError):
+            self._vachana_available = False
         finally:
             self._preload_thread = None
             # If the user changed models while this load was in progress,
@@ -320,28 +330,41 @@ class VoiceAnnouncer:
                 self.preload()
 
     def _synthesize_and_play(self, message):
-        output_path = TTS_DIR / f"alert_{time.time_ns()}.wav"
+        output_path = TEMP_TTS_DIR / f"alert_{time.time_ns()}.wav"
         generation = self._voice_generation
         model_path = self._vachana_model
         with self._speech_lock:
             try:
-                if model_path.is_file() and VACHANA_CONFIG.is_file():
-                    import wave
-                    from vachanatts.config import SpeechConfig
-                    from vachanatts.voice import Voice
+                TEMP_TTS_DIR.mkdir(parents=True, exist_ok=True)
+                if (
+                    model_path.is_file()
+                    and VACHANA_CONFIG.is_file()
+                    and self._vachana_available is not False
+                ):
+                    try:
+                        import wave
+                        from vachanatts.config import SpeechConfig
+                        from vachanatts.voice import Voice
 
-                    if getattr(self, "_vachana_voice", None) is None:
-                        self._vachana_voice = Voice.load(model_path, VACHANA_CONFIG)
-                    with wave.open(str(output_path), "wb") as wav_file:
-                        self._vachana_voice.synthesize_wav(
-                            message,
-                            wav_file,
-                            SpeechConfig(
-                                volume=SPEECH_VOLUME,
-                                length_scale=SPEECH_LENGTH_SCALE,
-                            ),
-                        )
-                elif TTS_EXE.is_file():
+                        if getattr(self, "_vachana_voice", None) is None:
+                            self._vachana_voice = Voice.load(model_path, VACHANA_CONFIG)
+                        with wave.open(str(output_path), "wb") as wav_file:
+                            self._vachana_voice.synthesize_wav(
+                                message,
+                                wav_file,
+                                SpeechConfig(
+                                    volume=SPEECH_VOLUME,
+                                    length_scale=SPEECH_LENGTH_SCALE,
+                                ),
+                            )
+                    except (ImportError, OSError, RuntimeError, ValueError):
+                        self._vachana_available = False
+                        try:
+                            output_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+
+                if not output_path.is_file() and TTS_EXE.is_file():
                     subprocess.run(
                         [str(TTS_EXE), "--text", message, "--output", str(output_path)],
                         stdout=subprocess.DEVNULL,
@@ -349,7 +372,11 @@ class VoiceAnnouncer:
                         timeout=8,
                         check=True,
                     )
-                elif PIPER_EXE.is_file() and PIPER_MODEL.is_file():
+                elif (
+                    not output_path.is_file()
+                    and PIPER_EXE.is_file()
+                    and PIPER_MODEL.is_file()
+                ):
                     subprocess.run(
                         [str(PIPER_EXE), "--model", str(PIPER_MODEL),
                          "--output_file", str(output_path)],
@@ -364,8 +391,12 @@ class VoiceAnnouncer:
                     # Synchronous playback in this worker prevents the file
                     # from being replaced/deleted while Windows is reading it.
                     winsound.PlaySound(str(output_path), winsound.SND_FILENAME)
-            except (OSError, subprocess.SubprocessError):
-                pass
+            except (ImportError, OSError, RuntimeError, subprocess.SubprocessError):
+                # Do not keep reporting a file-backed TTS engine as available
+                # after its package/model failed. Future alerts can then use
+                # SAPI or another bundled engine instead of failing silently.
+                if model_path.is_file() and VACHANA_CONFIG.is_file():
+                    self._vachana_available = False
             finally:
                 try:
                     output_path.unlink(missing_ok=True)
@@ -405,6 +436,9 @@ class VoiceAnnouncer:
         self._mci(f"play {MCI_ALIAS}", buf, buf_size - 1, 0)
 
     def stop(self):
+        # Invalidate any bundled-TTS worker that is currently synthesizing so
+        # it cannot start playback after the source has been closed or muted.
+        self._voice_generation += 1
         self._reset_state()
         if sys.platform == "win32":
             try:

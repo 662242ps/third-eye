@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 
@@ -19,9 +20,9 @@ def _normalize_thresholds(data):
     except (TypeError, ValueError, AttributeError):
         return DEFAULT_THRESHOLDS.copy()
 
-    if danger <= 0:
+    if not math.isfinite(danger) or danger <= 0:
         danger = DEFAULT_THRESHOLDS["danger"]
-    if warning <= danger:
+    if not math.isfinite(warning) or warning <= danger:
         warning = max(DEFAULT_THRESHOLDS["warning"], danger + 1.0)
 
     return {

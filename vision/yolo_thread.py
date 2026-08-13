@@ -11,6 +11,11 @@ from ultralytics import YOLO
 
 from vision.camera_config import load_camera_settings
 from vision.distance_config import DISTANCE_SETTINGS_FILE, load_distance_thresholds
+from vision.frame_utils import (
+    letterbox_with_meta,
+    unletterbox_box,
+    unletterbox_points,
+)
 
 # Resizing/drawing is lightweight here. Let Torch own the CPU worker pool instead
 # of allowing OpenCV and Torch to oversubscribe the same cores.
@@ -49,12 +54,13 @@ CLASS_CONF = {
     "car": conf,
     "truck": conf,
     "motorcycle": conf,
-    
+    "bus": conf,
 }
 
-# Keep inference input identical to the square image size used for training.
+# Keep the camera frame and the inference input square at exactly 640x640 so
+# the inference coordinate system always matches the zone editor.
 MODEL_IMGSZ = 640
-MODEL_IOU = 0.8
+MODEL_IOU = 0.55
 # Road scenes rarely have more than a handful of relevant objects in frame;
 # capping detections lower trims NMS/post-processing work.
 MODEL_MAX_DET = 20
@@ -89,6 +95,7 @@ LABEL_THAI = {
     "car": "รถยนต์",
     "truck": "รถบรรทุก",
     "motorcycle": "รถจักรยานยนต์",
+    "bus": "รถบัส",
     "person": "คน",
 }
 
@@ -129,6 +136,7 @@ class YoloThread(QThread):
 
     result_ready = pyqtSignal(str)
     error_ready = pyqtSignal(str)
+    model_ready_signal = pyqtSignal()
 
     def __init__(self, model_path=None):
         super().__init__()
@@ -152,6 +160,7 @@ class YoloThread(QThread):
         self._frame_uses_zone = True
         self._frame_id = 0
         self._processed_frame_id = 0
+        self._source_generation = 0
 
         self.zone = None
         self.zone_mtime = 0
@@ -197,28 +206,47 @@ class YoloThread(QThread):
         ]
         self._warm_up()
         self.model_ready = True
+        self.model_ready_signal.emit()
 
     def _warm_up(self):
-        """Build the inference graph before the first real camera frame."""
-        try:
-            self.model(
-                np.zeros((MODEL_IMGSZ, MODEL_IMGSZ, 3), dtype=np.uint8),
+        """Build the same inference path used by real frames."""
+        dummy_frame = np.zeros(
+            (MODEL_IMGSZ, MODEL_IMGSZ, 3), dtype=np.uint8
+        )
+        for _ in range(2):
+            self._predict(dummy_frame)
+
+    def _predict(self, frame):
+        """Run inference with one shared set of production parameters."""
+        inference_context = (
+            torch.inference_mode() if torch is not None else nullcontext()
+        )
+        with inference_context:
+            return self.model(
+                frame,
+                conf=min(CLASS_CONF.values()),
+                iou=MODEL_IOU,
                 imgsz=MODEL_IMGSZ,
+                max_det=MODEL_MAX_DET,
                 classes=self.class_ids or None,
+                device=self.device,
                 half=self.use_half,
+                augment=False,
                 verbose=False,
             )
-        except Exception as error:
-            print(f"YOLO warm-up skipped: {error}")
 
     def update_frame(self, frame, use_zone=True):
         """Store the newest frame and discard older unprocessed frames."""
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return False
         with self._lock:
             if self._stop_requested.is_set():
                 return False
-            if self._frame_id != self._processed_frame_id:
-                return False
-            self._frame = frame.copy()
+            # CaptureThread publishes a frame reference and never mutates it
+            # after publication. Keep the reference here; _detect() creates
+            # its own 640x640 letterboxed buffer. Copying a 1080p frame on
+            # every UI tick only consumed memory bandwidth and increased lag.
+            self._frame = frame
             self._frame_uses_zone = bool(use_zone)
             self._frame_id += 1
         self._frame_ready.set()
@@ -227,6 +255,7 @@ class YoloThread(QThread):
     def clear_frame(self):
         """Pause inference when no camera/video source is active."""
         with self._lock:
+            self._source_generation += 1
             self._frame = None
             self._processed_frame_id = self._frame_id
             self.last_detections = []
@@ -250,9 +279,12 @@ class YoloThread(QThread):
 
         return np.array(points, dtype=np.int32) if len(points) >= 3 else None
 
-    def get_zone(self):
+    def get_zone(self, source_shape=None):
         with self._lock:
-            return None if self.zone is None else self.zone.copy()
+            zone = None if self.zone is None else self.zone.copy()
+        if zone is not None and source_shape is not None:
+            return unletterbox_points(zone, source_shape, (MODEL_IMGSZ, MODEL_IMGSZ))
+        return zone
 
     def get_detections(self, predict=True):
         """Return the latest detections.
@@ -305,21 +337,21 @@ class YoloThread(QThread):
             return
         while not self._stop_requested.is_set():
             self._frame_ready.wait(timeout=0.1)
-            self._frame_ready.clear()
 
             with self._lock:
                 if self._frame is None or self._frame_id == self._processed_frame_id:
+                    self._frame_ready.clear()
                     continue
                 # update_frame already owns a private copy; replacing self._frame
                 # later does not mutate this local ndarray.
                 frame = self._frame
                 use_zone = self._frame_uses_zone
+                source_generation = self._source_generation
                 self._processed_frame_id = self._frame_id
+                self._frame_ready.clear()
 
             try:
                 started_at = time.perf_counter()
-                if use_zone:
-                    self._update_zone(frame.shape)
                 thresholds = self._get_thresholds()
                 detections = self._detect(frame, thresholds, use_zone=use_zone)
                 elapsed = max(time.perf_counter() - started_at, 1e-6)
@@ -330,6 +362,10 @@ class YoloThread(QThread):
                 continue
 
             with self._lock:
+                if source_generation != self._source_generation:
+                    # The source was closed, seeked, or replaced while this
+                    # inference was running. Never publish stale boxes.
+                    continue
                 self.last_detections = detections
             self.result_ready.emit(
                 self._format_result(detections, thresholds, use_zone=use_zone)
@@ -342,7 +378,7 @@ class YoloThread(QThread):
         self._zone_last_check = now
 
         try:
-            mtime = ZONE_FILE.stat().st_mtime
+            mtime = ZONE_FILE.stat().st_mtime_ns
         except FileNotFoundError:
             with self._lock:
                 self.zone = None
@@ -352,7 +388,10 @@ class YoloThread(QThread):
         with self._lock:
             reload_needed = self.zone is None or mtime != self.zone_mtime
         if reload_needed:
-            zone = self.load_zone(shape)
+            try:
+                zone = self.load_zone(shape)
+            except OSError:
+                zone = None
             with self._lock:
                 self.zone = zone
                 self.zone_mtime = mtime
@@ -376,27 +415,19 @@ class YoloThread(QThread):
         danger_dist = thresholds["danger"]
         warning_dist = thresholds["warning"]
 
-        min_conf = min(CLASS_CONF.values())
-        inference_context = torch.inference_mode() if torch is not None else nullcontext()
-        with inference_context:
-            results = self.model(
-                frame,
-                conf=min_conf,
-                iou=MODEL_IOU,
-                imgsz=MODEL_IMGSZ,
-                max_det=MODEL_MAX_DET,
-                classes=self.class_ids or None,
-                half=self.use_half,
-                augment=False,
-                verbose=False,
-            )
+        model_frame, transform = letterbox_with_meta(
+            frame, (MODEL_IMGSZ, MODEL_IMGSZ)
+        )
+        if use_zone:
+            self._update_zone(model_frame.shape)
+        results = self._predict(model_frame)
 
         detections = []
         zone = self.get_zone() if use_zone else None
         # Objects off to the side project onto a shorter "straight-ahead"
         # depth than their true (slant) distance from the camera; correct
         # for that using the horizontal offset from the frame's center.
-        principal_x = frame.shape[1] / 2.0
+        principal_x = model_frame.shape[1] / 2.0
 
         for result in results:
             for box in result.boxes:
@@ -409,7 +440,8 @@ class YoloThread(QThread):
                 if score < CLASS_CONF.get(label, 1.0):
                     continue
 
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                model_box = tuple(map(int, box.xyxy[0]))
+                x1, y1, x2, y2 = model_box
                 box_height = max(y2 - y1, 1)
                 if box_height < MIN_BOX_HEIGHT:
                     continue
@@ -423,7 +455,7 @@ class YoloThread(QThread):
                 lateral_ratio = (box_center_x - principal_x) / self._focal_length
                 raw_distance = depth * (1 + lateral_ratio ** 2) ** 0.5
                 detection = {
-                    "box": (x1, y1, x2, y2),
+                    "box": unletterbox_box(model_box, transform),
                     "label": label,
                     "score": round(score, 2),
                     "raw_dist": raw_distance,
@@ -556,7 +588,7 @@ class YoloThread(QThread):
 
         alert_detections = [
             detection for detection in detections
-            if detection["status"] in ("DANGER", "WARNING")
+            if detection["status"] in ("DANGER", "WARNING", "SAFE")
         ]
         if not alert_detections:
             return '<span style="color:#94a3b8;">ยังไม่มีวัตถุในระยะเตือน</span>'
@@ -579,10 +611,12 @@ class YoloThread(QThread):
         )
         return header + rows
 
-    def stop(self):
+    def stop(self, wait=True, timeout_ms=10000):
         self._stop_requested.set()
         self._frame_ready.set()
-        return self.wait(10000)
+        if not wait or not self.isRunning():
+            return True
+        return self.wait(timeout_ms)
 
     def update_thresholds(self, danger, warning):
         """Apply values saved by the UI without waiting for the file poll."""

@@ -178,32 +178,6 @@ class DistanceSettingWindow(QMainWindow):
         self.warning_spin.setValue(thresholds["warning"])
         self._update_preview()
 
-    def _update_preview(self):
-        danger = self.danger_spin.value()
-        warning = self.warning_spin.value()
-        if warning <= danger:
-            self.preview.setText("⚠️ ค่าระวังต้องมากกว่าค่าอันตราย")
-            return
-        self.preview.setText(
-            f"ผลลัพธ์ที่จะใช้\n"
-            f"อันตราย: ระยะ ≤ {danger:.1f} m\n"
-            f"ระวัง: {danger:.1f} m < ระยะ ≤ {warning:.1f} m\n"
-            f"ปลอดภัย: ระยะ > {warning:.1f} m"
-        )
-
-    def save_values(self):
-        danger = self.danger_spin.value()
-        warning = self.warning_spin.value()
-        if warning <= danger:
-            self.status.setText("กรุณาตั้งค่าระวังให้มากกว่าค่าอันตราย")
-            return
-
-        thresholds = save_distance_thresholds(danger, warning)
-        self.status.setStyleSheet("color:#22c55e; font-size:13px; font-weight:700;")
-        self.status.setText("บันทึกสำเร็จ ใช้ค่าระยะใหม่แล้ว")
-        self.thresholds_saved.emit(thresholds["danger"], thresholds["warning"])
-        self.close()
-
     # Keep all user-facing validation text in one place and ensure it remains
     # readable even when an older settings file contains legacy text.
     def _update_preview(self):

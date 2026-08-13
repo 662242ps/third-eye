@@ -30,6 +30,7 @@ from ui.zone_setting_window import ZoneSettingWindow
 from vision.alert_config import load_alert_settings
 from vision.alert_sound import DangerAlarm
 from vision.camera_config import load_camera_settings
+from vision.capture_thread import CaptureThread
 from vision.distance_config import load_distance_thresholds
 from vision.model_config import load_model_settings
 from vision.voice_alert import VoiceAnnouncer
@@ -167,7 +168,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 720)
         self.setStyleSheet(APP_STYLE)
 
-        self.cap = None
+        self.capture = None
+        self._last_capture_frame_number = -1
         self.current_frame = None
         self.last_time = time.time()
         self.fps = 0.0
@@ -190,6 +192,11 @@ class MainWindow(QMainWindow):
         self.video_total_frames = 0
         self.video_fps = 0.0
         self.video_slider_dragging = False
+        self._last_alert_html = None
+        self.model_name = "กำลังโหลด"
+        self._stopping_yolo = None
+        self._pending_model = None
+        self._stopping_capture = None
         self.danger_alarm = DangerAlarm()
         self.voice_announcer = VoiceAnnouncer()
         alert_settings = load_alert_settings()
@@ -205,14 +212,15 @@ class MainWindow(QMainWindow):
         self._refresh_mute_button()
 
         model_relative, model_path = load_model_settings()
+        self.model_name = model_relative
         try:
             self.yolo = YoloThread(model_path=model_path)
             self.yolo.result_ready.connect(self.on_yolo_result)
             self.yolo.error_ready.connect(self.on_yolo_error)
+            self.yolo.model_ready_signal.connect(self.on_yolo_ready)
             self.yolo.start()
             QTimer.singleShot(1200, self.voice_announcer.preload)
-            self.set_status("Loading detection model...", "#f59e0b")
-            self.set_status("พร้อมใช้งาน", "#22c55e")
+            self.set_status("กำลังเตรียมโมเดล", "#f59e0b")
         except Exception as error:
             self.alert.setText(f"Cannot load YOLO model ({model_relative}): {error}")
             self.set_status("โหลดโมเดลไม่สำเร็จ", "#ef4444")
@@ -285,7 +293,7 @@ class MainWindow(QMainWindow):
         self.btn_mute.setObjectName("secondaryButton")
         self.btn_mute.setCheckable(True)
         self.btn_mute.setToolTip(
-            "ปิด/เปิดเสียงไซเรนและเสียงพูดแจ้งเตือนเมื่ออยู่ในระยะอันตราย"
+            "ปิด/เปิดเสียงไซเรนและเสียงพูดแจ้งเตือนในระยะระวัง/อันตราย"
         )
         self.btn_settings = QPushButton("ตั้งค่า")
         self.btn_settings.setObjectName("settingButton")
@@ -450,7 +458,9 @@ class MainWindow(QMainWindow):
         self.danger_count = self._make_count("อันตราย", "0", "#EF4444")
         self.warning_count = self._make_count("ระวัง", "0", "#F59E0B")
         count_row.addWidget(self.danger_count)
+        self.safe_count = self._make_count("ปลอดภัย", "0", "#22C55E")
         count_row.addWidget(self.warning_count)
+        count_row.addWidget(self.safe_count)
         alert_layout.addLayout(count_row)
 
         self.distance_status = QLabel("")
@@ -490,7 +500,9 @@ class MainWindow(QMainWindow):
         for widget, text in labels.items():
             widget.setText(text)
         self.btn_mute.setText("🔊 เสียงแจ้งเตือน")
-        self.btn_mute.setToolTip("เปิดหรือปิดเสียงไซเรนและเสียงพูดแจ้งเตือน")
+        self.btn_mute.setToolTip(
+            "เปิดหรือปิดเสียงไซเรนและเสียงพูดแจ้งเตือนในระยะระวัง/อันตราย"
+        )
         self.btn_settings.setToolTip("ตั้งค่าระยะ โซน กล้อง โมเดล และเสียง")
         actions = []
         menu_labels = [
@@ -605,7 +617,15 @@ class MainWindow(QMainWindow):
         )
 
     def open_camera(self):
-        if self.cap is not None:
+        if self.capture is not None:
+            if self.capture.isRunning() or self._stopping_capture is not None:
+                return
+            self.capture = None
+        if self._stopping_capture is not None:
+            return
+        if self.yolo is None or not self.yolo.isRunning():
+            self.alert.setText("โมเดลยังไม่พร้อมใช้งาน กรุณาตรวจสอบไฟล์โมเดลแล้วเปิดโปรแกรมใหม่")
+            self.set_status("โมเดลไม่พร้อมใช้งาน", "#ef4444")
             return
         self.test_mode = False
         self.test_frame = None
@@ -613,44 +633,54 @@ class MainWindow(QMainWindow):
         self.test_navigation_widget.setVisible(False)
         self.video_timeline_widget.setVisible(False)
         camera_index = load_camera_settings()["camera_index"]
-        self.cap = cv2.VideoCapture(camera_index)
-        if not self.cap.isOpened():
-            self.cap.release()
-            self.cap = None
-            self.alert.setText("ไม่สามารถเปิดกล้องได้")
-            self.set_status("กล้องผิดพลาด", "#ef4444")
-            return
+        self.capture = CaptureThread(camera_index, is_video=False, parent=self)
+        self.capture.error_ready.connect(self._on_capture_error)
+        self.capture.end_of_stream.connect(self._on_capture_end)
+        self.capture.start()
+        self._last_capture_frame_number = -1
         self.last_time = time.time()
         self.source_name = f"Camera {camera_index}"
         self.camera_badge.setText("กล้อง เปิด")
         self.camera_badge.setStyleSheet("background:#123524; color:#86EFAC; border:1px solid #22C55E; border-radius:8px; padding:6px 10px; font-size:12px; font-weight:700;")
         self.source_metric.value_label.setText(self.source_name)
         self.timer.start(FRAME_INTERVAL_MS)
-        self.alert.setText("เปิดกล้องแล้ว")
-        self.set_status("กำลังทำงาน", "#16a34a")
+        self.last_info = "<span style='color:#94a3b8;'>เปิดกล้องแล้ว</span>"
+        self._last_alert_html = None
+        self.alert.setHtml(self.last_info)
+        if self.yolo is not None and not self.yolo.model_ready:
+            self.set_status("กำลังเตรียมโมเดล", "#f59e0b")
+        else:
+            self.set_status("กำลังทำงาน", "#16a34a")
 
     def open_video(self):
+        if self.yolo is None or not self.yolo.isRunning():
+            self.alert.setText("โมเดลยังไม่พร้อมใช้งาน กรุณาตรวจสอบไฟล์โมเดลแล้วเปิดโปรแกรมใหม่")
+            self.set_status("โมเดลไม่พร้อมใช้งาน", "#ef4444")
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Video", "", "Video Files (*.mp4 *.avi *.mov *.mkv)"
         )
         if not path:
             return
 
-        self.close_camera(clear_display=False)
+        if not self.close_camera(clear_display=False):
+            self.alert.setText("กำลังปิดแหล่งภาพเดิม กรุณาลองใหม่อีกครั้ง")
+            self.set_status("กำลังปิดแหล่งภาพ", "#f59e0b")
+            return
         self.test_mode = False
         self.test_frame = None
-        self.cap = cv2.VideoCapture(path)
-        if not self.cap.isOpened():
-            self.cap.release()
-            self.cap = None
+        metadata_capture = cv2.VideoCapture(path)
+        if not metadata_capture.isOpened():
+            metadata_capture.release()
             self.alert.setText("ไม่สามารถเปิดวิดีโอได้")
             self.set_status("วิดีโอผิดพลาด", "#ef4444")
             return
         self.video_is_file = True
         self.video_total_frames = max(
-            0, int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            0, int(metadata_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         )
-        self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.video_fps = metadata_capture.get(cv2.CAP_PROP_FPS)
+        metadata_capture.release()
         if self.video_fps <= 0:
             self.video_fps = 30.0
         self.video_slider.setRange(0, max(0, self.video_total_frames - 1))
@@ -661,12 +691,25 @@ class MainWindow(QMainWindow):
         )
         self.test_navigation_widget.setVisible(False)
         self.video_timeline_widget.setVisible(True)
+        self.capture = CaptureThread(
+            path, is_video=True, video_fps=self.video_fps, parent=self
+        )
+        self.capture.error_ready.connect(self._on_capture_error)
+        self.capture.end_of_stream.connect(self._on_capture_end)
+        self.capture.start()
+        self._last_capture_frame_number = -1
         self.last_time = time.time()
         self.source_name = Path(path).name
         self.source_metric.value_label.setText(self.source_name)
-        self.timer.start(FRAME_INTERVAL_MS)
-        self.alert.setText("เปิดวิดีโอแล้ว")
-        self.set_status("กำลังทำงาน", "#16a34a")
+        video_interval = max(16, min(100, int(round(1000 / self.video_fps))))
+        self.timer.start(video_interval)
+        self.last_info = "<span style='color:#94a3b8;'>เปิดวิดีโอแล้ว</span>"
+        self._last_alert_html = None
+        self.alert.setHtml(self.last_info)
+        if self.yolo is not None and not self.yolo.model_ready:
+            self.set_status("กำลังเตรียมโมเดล", "#f59e0b")
+        else:
+            self.set_status("กำลังทำงาน", "#16a34a")
 
     @staticmethod
     def _format_video_time(seconds):
@@ -678,9 +721,10 @@ class MainWindow(QMainWindow):
         return f"{minutes:02d}:{seconds:02d}"
 
     def _on_video_slider_pressed(self):
-        if not self.video_is_file:
+        if not self.video_is_file or self.capture is None:
             return
         self.video_slider_dragging = True
+        self.capture.pause()
         self.timer.stop()
 
     def _preview_video_slider_time(self, frame_number):
@@ -693,17 +737,18 @@ class MainWindow(QMainWindow):
         self.video_time_label.setText(f"{current} / {duration}")
 
     def _on_video_slider_released(self):
-        if not self.video_is_file or self.cap is None:
+        if not self.video_is_file or self.capture is None:
             return
         frame_number = self.video_slider.value()
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        self.capture.seek(frame_number)
+        self.capture.resume()
         if self.yolo is not None:
             self.yolo.clear_frame()
         self.video_slider_dragging = False
+        self._last_capture_frame_number = -1
         self.last_time = time.time()
-        self.update_frame()
-        if self.cap is not None:
-            self.timer.start(FRAME_INTERVAL_MS)
+        video_interval = max(16, min(100, int(round(1000 / self.video_fps))))
+        self.timer.start(video_interval)
 
     def open_test_image(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -715,7 +760,14 @@ class MainWindow(QMainWindow):
         if not paths:
             return
 
-        self.close_camera(clear_display=False)
+        if not self.close_camera(clear_display=False):
+            self.alert.setText("กำลังปิดแหล่งภาพเดิม กรุณาลองใหม่อีกครั้ง")
+            self.set_status("กำลังปิดแหล่งภาพ", "#f59e0b")
+            return
+        if self.yolo is None or not self.yolo.isRunning():
+            self.alert.setText("โมเดลยังไม่พร้อมใช้งาน")
+            self.set_status("โมเดลไม่พร้อม", "#ef4444")
+            return
         self.test_mode = True
         self.test_queue = list(paths)
         self.test_index = 0
@@ -725,12 +777,30 @@ class MainWindow(QMainWindow):
         self.test_navigation_widget.setVisible(True)
         self.video_timeline_widget.setVisible(False)
         self._update_test_navigation()
-
-        if self.yolo is None:
-            self.alert.setText("โมเดลยังไม่พร้อมใช้งาน")
-            self.set_status("โมเดลไม่พร้อม", "#ef4444")
-            return
         self._load_next_test_image()
+
+    @staticmethod
+    def _encode_result_image(image):
+        """Store batch results compactly instead of retaining raw arrays."""
+        if image is None:
+            return None
+        encoded_ok, encoded = cv2.imencode(
+            ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85]
+        )
+        return encoded.tobytes() if encoded_ok else None
+
+    @staticmethod
+    def _decode_result_image(data):
+        if data is None:
+            return None
+        if isinstance(data, np.ndarray):
+            return data
+        try:
+            return cv2.imdecode(
+                np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR
+            )
+        except (TypeError, ValueError):
+            return None
 
     def _load_next_test_image(self):
         if not self.test_mode:
@@ -756,8 +826,10 @@ class MainWindow(QMainWindow):
                 self.test_index += 1
                 continue
 
-            self.test_frame = cv2.resize(image, (640, 640))
-            self.current_frame = self.test_frame.copy()
+            # Keep the original aspect ratio for the preview. YoloThread
+            # letterboxes this frame internally before 640x640 inference.
+            self.test_frame = image
+            self.current_frame = self.test_frame
             self.source_name = Path(path).name
             self.source_metric.value_label.setText(
                 f"{self.source_name} ({self.test_index + 1}/{len(self.test_queue)})"
@@ -782,9 +854,23 @@ class MainWindow(QMainWindow):
             self._finish_test_batch()
 
     def _submit_test_frame(self):
-        if self.test_mode and self.test_frame is not None and self.yolo is not None:
+        if not (self.test_mode and self.test_frame is not None):
+            return
+        if self.yolo is None or not self.yolo.isRunning():
+            self._abort_test_batch("โมเดลหยุดทำงานก่อนตรวจภาพเสร็จ")
+            return
+        if self.yolo is not None:
             if not self.yolo.update_frame(self.test_frame, use_zone=False):
                 QTimer.singleShot(50, self._submit_test_frame)
+
+    def _abort_test_batch(self, message):
+        """Stop a batch that can no longer receive an inference result."""
+        self.test_mode = False
+        self.test_frame = None
+        self.btn_save_results.setEnabled(bool(self.test_results))
+        self.alert.setText(message)
+        self.set_status("Test หยุดทำงาน", "#ef4444")
+        self._update_test_navigation()
 
     def _finish_test_batch(self):
         self.test_mode = False
@@ -815,9 +901,10 @@ class MainWindow(QMainWindow):
         item = self.test_results[self.test_view_index]
         self.source_name = Path(item["path"]).name
         self.source_metric.value_label.setText(self.source_name)
-        if item["image"] is not None:
+        result_image = self._decode_result_image(item["image"])
+        if result_image is not None:
             self._display_frame(
-                item["image"].copy(),
+                result_image,
                 draw_zone=False,
                 show_detections=False,
             )
@@ -893,13 +980,14 @@ class MainWindow(QMainWindow):
             for result_index, item in enumerate(self.test_results, 1):
                 image_name = Path(item["path"]).name
                 detections = item["detections"]
-                if item["image"] is not None:
+                image_data = item["image"]
+                if isinstance(image_data, np.ndarray):
+                    image_data = self._encode_result_image(image_data)
+                if image_data:
                     result_name = (
                         f"{result_index:03d}_{Path(image_name).stem}_detected.jpg"
                     )
-                    encoded_ok, encoded = cv2.imencode(".jpg", item["image"])
-                    if encoded_ok:
-                        encoded.tofile(str(output_path / result_name))
+                    (output_path / result_name).write_bytes(image_data)
                 if not detections:
                     writer.writerow(
                         [
@@ -951,57 +1039,103 @@ class MainWindow(QMainWindow):
         self.video_total_frames = 0
         self.video_fps = 0.0
         self.video_slider_dragging = False
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+        stopped = True
+        if self.capture is not None:
+            capture = self.capture
+            # Do not block the Qt GUI while a camera backend is stuck in
+            # read(). The retry timer below owns the eventual cleanup.
+            if capture.stop(timeout=0):
+                capture.deleteLater()
+                self.capture = None
+                self._stopping_capture = None
+            else:
+                # Never discard a still-running QThread. Keep the reference
+                # and retry asynchronously so a blocked camera read cannot
+                # freeze the UI or allow two capture workers at once.
+                self._stopping_capture = capture
+                QTimer.singleShot(100, self._finish_capture_stop)
+                stopped = False
+        self._last_capture_frame_number = -1
         self.current_frame = None
         self.camera_badge.setText("กล้อง ปิด")
         self.camera_badge.setStyleSheet("background:#162238; color:#94A3B8; border:1px solid #26364D; border-radius:8px; padding:6px 10px; font-size:12px; font-weight:700;")
         self.source_name = "No source"
         self.source_metric.value_label.setText(self.source_name)
         self.fps_metric.value_label.setText("--")
+        self.danger_count.setText("อันตราย: 0")
+        self.warning_count.setText("ระวัง: 0")
+        self.safe_count.setText("ปลอดภัย: 0")
         if self.yolo is not None:
             self.yolo.clear_frame()
         if clear_display:
             self.video.clear()
             self.video.setText("ยังไม่ได้เปิดกล้องหรือวิดีโอ")
-            self.alert.setText("ปิดกล้องแล้ว")
-            self.set_status("พร้อมใช้งาน", "#22c55e")
+            self.last_info = "<span style='color:#94a3b8;'>ปิดกล้องแล้ว</span>"
+            self._last_alert_html = None
+            self.alert.setHtml(self.last_info)
+            if self.yolo is None:
+                self.set_status("โมเดลไม่พร้อมใช้งาน", "#ef4444")
+            elif not self.yolo.model_ready:
+                self.set_status("กำลังเตรียมโมเดล", "#f59e0b")
+            else:
+                self.set_status("พร้อมใช้งาน", "#22c55e")
+        return stopped
+
+    def _on_capture_error(self, message):
+        if self.sender() is not self.capture or self.capture is None:
+            return
+        self.close_camera(clear_display=False)
+        self.alert.setText(message)
+        self.set_status("แหล่งภาพผิดพลาด", "#ef4444")
+
+    def _finish_capture_stop(self):
+        capture = self._stopping_capture
+        if capture is None:
+            return
+        if capture.isRunning():
+            # Do not wait on the GUI thread. Some camera backends can remain
+            # inside read() briefly even after a stop request.
+            capture.stop(timeout=0)
+            QTimer.singleShot(50, self._finish_capture_stop)
+            return
+        capture.deleteLater()
+        if self.capture is capture:
+            self.capture = None
+        self._stopping_capture = None
+
+    def _on_capture_end(self):
+        if self.sender() is not self.capture or not self.video_is_file:
+            return
+        self.timer.stop()
+        self.video_slider.setValue(max(0, self.video_total_frames - 1))
+        self.alert.setText(
+            "วิดีโอจบแล้ว สามารถลากแถบเวลาเพื่อดูช่วงอื่นได้"
+        )
+        self.set_status("วิดีโอจบแล้ว", "#2563eb")
 
     def update_frame(self):
-        if self.cap is None:
+        if self.capture is None:
             return
 
-        ret, frame = self.cap.read()
-        if not ret:
-            if self.video_is_file:
-                self.timer.stop()
-                self.video_slider.setValue(
-                    max(0, self.video_total_frames - 1)
-                )
-                self.alert.setText(
-                    "วิดีโอจบแล้ว สามารถลากแถบเวลาเพื่อดูช่วงอื่นได้"
-                )
-                self.set_status("วิดีโอจบแล้ว", "#2563eb")
-                return
-            self.close_camera()
-            self.alert.setText("ไม่สามารถอ่านเฟรมจากกล้องได้")
+        frame, frame_number = self.capture.get_latest()
+        if frame is None or frame_number < 0:
             return
+        if frame_number == self._last_capture_frame_number:
+            return
+        self._last_capture_frame_number = frame_number
 
-        frame = cv2.resize(frame, (640, 640))
-        self.current_frame = frame.copy()
+        # CaptureThread publishes immutable frame references. Keep the raw
+        # frame for zone previews and make only one drawing copy for the UI.
+        self.current_frame = frame
         if self.video_is_file and not self.video_slider_dragging:
-            current_frame = max(
-                0, int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-            )
             self.video_slider.blockSignals(True)
-            self.video_slider.setValue(current_frame)
+            self.video_slider.setValue(frame_number)
             self.video_slider.blockSignals(False)
-            self._preview_video_slider_time(current_frame)
+            self._preview_video_slider_time(frame_number)
         if self.yolo is not None:
             self.yolo.update_frame(frame)
 
-        self._display_frame(frame, draw_zone=True)
+        self._display_frame(frame.copy(), draw_zone=True)
 
     def _display_frame(self, frame, draw_zone, show_detections=True):
         detections = (
@@ -1014,6 +1148,9 @@ class MainWindow(QMainWindow):
             warning_total = sum(d["status"] == "WARNING" for d in detections)
             self.danger_count.setText(f"อันตราย: {danger_total}")
             self.warning_count.setText(f"ระวัง: {warning_total}")
+        if draw_zone and hasattr(self, "safe_count"):
+            safe_total = sum(d["status"] == "SAFE" for d in detections)
+            self.safe_count.setText(f"ปลอดภัย: {safe_total}")
         for detection in detections:
             x1, y1, x2, y2 = detection["box"]
             color = detection["color"]
@@ -1028,7 +1165,11 @@ class MainWindow(QMainWindow):
                 2,
             )
 
-        zone = self.yolo.get_zone() if draw_zone and self.yolo else None
+        zone = (
+            self.yolo.get_zone(frame.shape)
+            if draw_zone and self.yolo
+            else None
+        )
         if zone is not None:
             overlay = frame.copy()
             cv2.fillPoly(overlay, [zone], (30, 80, 180))
@@ -1050,13 +1191,15 @@ class MainWindow(QMainWindow):
             ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
             self.fps_metric.value_label.setText(f"{self.fps:.1f} / {ai_fps:.1f}")
             if hasattr(self, "bottom_status"):
-                model_name, _ = load_model_settings()
+                model_name = self.model_name
                 audio_state = "เปิด" if self.voice_announcer.enabled else "ปิด"
                 self.bottom_status.setText(
                     f"แหล่งภาพ: {self.source_name} | โมเดล: {model_name} | "
                     f"FPS: {self.fps:.1f} | โซน: เปิด | เสียง: {audio_state}"
                 )
-            self.alert.setHtml(self.last_info)
+            if self.last_info != self._last_alert_html:
+                self.alert.setHtml(self.last_info)
+                self._last_alert_html = self.last_info
             danger_detections = [d for d in detections if d["status"] == "DANGER"]
             alert_detections = [
                 d for d in detections if d["status"] in ("DANGER", "WARNING")
@@ -1069,7 +1212,12 @@ class MainWindow(QMainWindow):
             nearest_alert = nearest_danger or min(
                 alert_detections, key=lambda d: d["dist"], default=None
             )
-            self.danger_alarm.set_active(nearest_danger is not None)
+            # DANGER is prioritized when both levels exist.  When only
+            # WARNING objects remain, use the quieter/slower warning siren.
+            self.danger_alarm.set_active(
+                nearest_alert is not None,
+                nearest_alert["status"] if nearest_alert else "SAFE",
+            )
             self.voice_announcer.announce(
                 nearest_alert["label"] if nearest_alert else None,
                 nearest_alert["dist"] if nearest_alert else None,
@@ -1092,7 +1240,7 @@ class MainWindow(QMainWindow):
                 {
                     "path": self.test_queue[self.test_index],
                     "detections": detections,
-                    "image": annotated,
+                    "image": self._encode_result_image(annotated),
                     "error": False,
                     "info": info,
                 }
@@ -1105,6 +1253,19 @@ class MainWindow(QMainWindow):
 
     def on_yolo_error(self, message):
         self.last_info = f"<span style='color:#ef4444;'>{message}</span>"
+        self.alert.setHtml(self.last_info)
+        failed_worker = self.sender()
+        if (
+            message.startswith("YOLO model load error:")
+            and failed_worker is self.yolo
+        ):
+            # A QThread that returned from run() cannot accept frames again.
+            # Clear it immediately so the UI never waits forever for a result.
+            self.yolo = None
+            if failed_worker is not None:
+                failed_worker.deleteLater()
+            if self.test_mode:
+                self._abort_test_batch("โมเดลโหลดไม่สำเร็จ จึงหยุดการ Test")
         if self.test_mode:
             self.alert.setHtml(self.last_info)
             if self.test_index < len(self.test_queue):
@@ -1112,7 +1273,7 @@ class MainWindow(QMainWindow):
                     {
                         "path": self.test_queue[self.test_index],
                         "detections": [],
-                        "image": self.test_frame.copy()
+                        "image": self._encode_result_image(self.test_frame)
                         if self.test_frame is not None
                         else None,
                         "error": True,
@@ -1123,17 +1284,19 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(50, self._load_next_test_image)
         self.set_status("ตรวจจับผิดพลาด", "#ef4444")
 
+    def on_yolo_ready(self):
+        """Show ready only after model load, fuse, and warm-up are complete."""
+        if self.sender() is self.yolo:
+            self.set_status("พร้อมใช้งาน", "#22c55e")
+
     def open_settings(self):
-        image_path = None
-        TEMP_DIR.mkdir(exist_ok=True)
-        if self.current_frame is not None:
-            image_path = TEMP_DIR / "zone_preview.jpg"
-            cv2.imwrite(str(image_path), self.current_frame)
+        image_path = self._zone_preview_path()
         if self.settings_win is None:
             self.settings_win = SettingsWindow(str(image_path) if image_path else None)
             self.settings_win.settings_saved.connect(self.on_settings_saved)
-            if self.yolo is not None:
-                self.settings_win.zone_saved.connect(self.yolo.invalidate_zone)
+            self.settings_win.zone_saved.connect(self._invalidate_zone)
+        else:
+            self.settings_win.set_zone_image(str(image_path) if image_path else None)
         self.settings_win.setWindowModality(Qt.ApplicationModal)
         self.settings_win.show()
         self.settings_win.raise_()
@@ -1171,6 +1334,7 @@ class MainWindow(QMainWindow):
             f"Camera {camera_index}, Focal Length {focal_length:.1f} px</span>"
         )
         self.alert.setHtml(self.last_info)
+        self._last_alert_html = self.last_info
 
     def open_model_setting(self):
         if self.model_win is None:
@@ -1180,26 +1344,61 @@ class MainWindow(QMainWindow):
 
     def switch_model(self, relative_path):
         """Restart the detection thread on the newly selected model."""
-        self.close_camera(clear_display=False)
-
-        if self.yolo is not None:
-            self.yolo.result_ready.disconnect(self.on_yolo_result)
-            self.yolo.error_ready.disconnect(self.on_yolo_error)
-            self.yolo.stop()
-            self.yolo = None
+        if not self.close_camera(clear_display=False):
+            self.set_status("กำลังปิดแหล่งภาพก่อนเปลี่ยนโมเดล", "#f59e0b")
+            QTimer.singleShot(100, lambda: self.switch_model(relative_path))
+            return
+        self.model_name = relative_path
 
         model_relative, model_path = load_model_settings()
+        self._pending_model = (model_relative, model_path)
+        if self._stopping_yolo is not None:
+            self.set_status("กำลังเปลี่ยนโมเดล", "#f59e0b")
+            return
+        if self.yolo is not None:
+            old_yolo = self.yolo
+            self.yolo = None
+            old_yolo.result_ready.disconnect(self.on_yolo_result)
+            old_yolo.error_ready.disconnect(self.on_yolo_error)
+            old_yolo.model_ready_signal.disconnect(self.on_yolo_ready)
+            self._stopping_yolo = old_yolo
+            old_yolo.finished.connect(self._finish_model_switch)
+            self.set_status("กำลังเปลี่ยนโมเดล", "#f59e0b")
+            if old_yolo.isRunning():
+                old_yolo.stop(wait=False)
+            else:
+                self._finish_model_switch()
+            return
+
+        self._start_yolo_model(model_relative, model_path)
+
+    def _finish_model_switch(self):
+        if self.sender() is not None and self.sender() is not self._stopping_yolo:
+            return
+        old_yolo = self._stopping_yolo
+        self._stopping_yolo = None
+        if old_yolo is not None:
+            old_yolo.deleteLater()
+        pending_model = self._pending_model
+        self._pending_model = None
+        if pending_model is not None:
+            self._start_yolo_model(*pending_model)
+
+    def _start_yolo_model(self, model_relative, model_path):
+        self.model_name = model_relative
         try:
             self.yolo = YoloThread(model_path=model_path)
             self.yolo.result_ready.connect(self.on_yolo_result)
             self.yolo.error_ready.connect(self.on_yolo_error)
+            self.yolo.model_ready_signal.connect(self.on_yolo_ready)
             self.yolo.start()
             QTimer.singleShot(1200, self.voice_announcer.preload)
             self.last_info = (
-                f"<span style='color:#22c55e;'>เปลี่ยนโมเดลเป็น \"{model_relative}\" แล้ว</span>"
+                f"<span style='color:#f59e0b;'>กำลังเตรียมโมเดล \"{model_relative}\"...</span>"
             )
             self.alert.setHtml(self.last_info)
-            self.set_status("พร้อมใช้งาน", "#22c55e")
+            self._last_alert_html = self.last_info
+            self.set_status("กำลังเตรียมโมเดล", "#f59e0b")
         except Exception as error:
             self.alert.setText(f"Cannot load YOLO model ({model_relative}): {error}")
             self.set_status("โหลดโมเดลไม่สำเร็จ", "#ef4444")
@@ -1220,6 +1419,7 @@ class MainWindow(QMainWindow):
             f"ไซเรน {'เปิด' if siren_enabled else 'ปิด'}, "
             f"เสียงพูด {'เปิด' if voice_enabled else 'ปิด'}</span>"
         )
+        self._last_alert_html = None
         self.alert.setHtml(self.last_info)
 
     def on_thresholds_saved(self, danger, warning):
@@ -1232,17 +1432,29 @@ class MainWindow(QMainWindow):
         )
 
     def open_zone_setting(self):
-        image_path = None
-        TEMP_DIR.mkdir(exist_ok=True)
-        if self.current_frame is not None:
-            image_path = TEMP_DIR / "zone_preview.jpg"
-            cv2.imwrite(str(image_path), self.current_frame)
+        image_path = self._zone_preview_path()
 
         if self.zone_win is None or not self.zone_win.isVisible():
             self.zone_win = ZoneSettingWindow(str(image_path) if image_path else None)
-            if self.yolo is not None:
-                self.zone_win.zone_saved.connect(self.yolo.invalidate_zone)
+            self.zone_win.zone_saved.connect(self._invalidate_zone)
+        else:
+            self.zone_win.set_image(str(image_path) if image_path else None)
         self._show_single_settings_window(self.zone_win)
+
+    def _invalidate_zone(self):
+        """Invalidate the currently active detector after a zone save."""
+        if self.yolo is not None and self.yolo.isRunning():
+            self.yolo.invalidate_zone()
+
+    def _zone_preview_path(self):
+        """Save the latest frame and return the preview path when available."""
+        TEMP_DIR.mkdir(exist_ok=True)
+        image_path = TEMP_DIR / "zone_preview.jpg"
+        if self.current_frame is None:
+            return None
+        if not cv2.imwrite(str(image_path), self.current_frame):
+            return None
+        return image_path
 
     def _show_single_settings_window(self, window):
         """Keep settings focused: only one settings page is visible at a time."""
@@ -1263,12 +1475,22 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.close_camera()
+        if self.capture is not None and self.capture.isRunning():
+            event.ignore()
+            QTimer.singleShot(250, self.close)
+            return
         self.danger_alarm.stop()
         self.voice_announcer.stop()
         if self.yolo is not None and self.yolo.isRunning():
-            if not self.yolo.stop():
-                self.alert.setText("กำลังรอให้ระบบตรวจจับหยุดทำงาน...")
-                event.ignore()
-                QTimer.singleShot(250, self.close)
-                return
+            # Inference can be inside a model call; stopping it must not
+            # block the Qt event loop while the window is closing.
+            self.yolo.stop(wait=False)
+            event.ignore()
+            QTimer.singleShot(100, self.close)
+            return
+        if self._stopping_yolo is not None and self._stopping_yolo.isRunning():
+            self._stopping_yolo.stop(wait=False)
+            event.ignore()
+            QTimer.singleShot(100, self.close)
+            return
         event.accept()
