@@ -15,6 +15,37 @@ SETTINGS_DIR = PROJECT_ROOT / "settings"
 MODEL_SETTINGS_FILE = SETTINGS_DIR / "model_settings.json"
 
 DEFAULT_MODEL_RELATIVE = "model5_150/best.pt"
+DEFAULT_MODEL_CONF = 0.50
+DEFAULT_MODEL_IOU = 0.55
+
+
+def normalize_model_thresholds(conf=None, iou=None):
+    """Clamp YOLO confidence and NMS IoU thresholds to safe ranges."""
+    try:
+        conf = float(conf)
+    except (TypeError, ValueError):
+        conf = DEFAULT_MODEL_CONF
+    try:
+        iou = float(iou)
+    except (TypeError, ValueError):
+        iou = DEFAULT_MODEL_IOU
+    if not 0.01 <= conf <= 0.99:
+        conf = DEFAULT_MODEL_CONF
+    if not 0.01 <= iou <= 0.99:
+        iou = DEFAULT_MODEL_IOU
+    return {"conf": round(conf, 2), "iou": round(iou, 2)}
+
+
+def load_model_thresholds():
+    """Load persisted YOLO thresholds, using defaults for old settings files."""
+    if not MODEL_SETTINGS_FILE.is_file():
+        return normalize_model_thresholds()
+    try:
+        with MODEL_SETTINGS_FILE.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        return normalize_model_thresholds(data.get("conf"), data.get("iou"))
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return normalize_model_thresholds()
 
 
 def list_available_models():
@@ -92,11 +123,23 @@ def load_model_settings():
     return DEFAULT_MODEL_RELATIVE, default_path
 
 
-def save_model_settings(relative_path):
+def save_model_settings(relative_path, conf=None, iou=None):
+    thresholds = load_model_thresholds()
+    if conf is not None or iou is not None:
+        thresholds = normalize_model_thresholds(
+            thresholds["conf"] if conf is None else conf,
+            thresholds["iou"] if iou is None else iou,
+        )
     SETTINGS_DIR.mkdir(exist_ok=True)
     with MODEL_SETTINGS_FILE.open("w", encoding="utf-8") as file:
-        json.dump({"model_path": relative_path}, file, ensure_ascii=False, indent=2)
+        json.dump(
+            {"model_path": relative_path, **thresholds},
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
         file.write("\n")
+    return thresholds
 
 
 def import_model_file(source_path):

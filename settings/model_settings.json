@@ -1,3 +1,5 @@
 {
-  "model_path": "model5_150/best.pt"
+  "model_path": "model5_150/best.pt",
+  "conf": 0.5,
+  "iou": 0.55
 }

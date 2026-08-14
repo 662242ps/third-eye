@@ -26,7 +26,13 @@ from vision.frame_utils import (
     unletterbox_box,
     unletterbox_points,
 )
-from vision.model_config import DEFAULT_MODEL_RELATIVE
+from vision.model_config import (
+    DEFAULT_MODEL_CONF,
+    DEFAULT_MODEL_IOU,
+    DEFAULT_MODEL_RELATIVE,
+    load_model_thresholds,
+    normalize_model_thresholds,
+)
 from vision.object_height_config import (
     DEFAULT_OBJECT_HEIGHTS,
     load_object_heights,
@@ -53,7 +59,7 @@ CLASS_ALIASES = {
 
 # Practical confidence thresholds for real webcam/video use.
 # Higher values reduce false positives. Lower values detect more objects but may be noisy.
-conf = 0.5
+conf = DEFAULT_MODEL_CONF
 CLASS_CONF = {
     "person": conf,
     "car": conf,
@@ -64,7 +70,7 @@ CLASS_CONF = {
 # Keep the camera frame and the inference input square at exactly 640x640 so
 # the inference coordinate system always matches the zone editor.
 MODEL_IMGSZ = 640
-MODEL_IOU = 0.55
+MODEL_IOU = DEFAULT_MODEL_IOU
 # Road scenes rarely have more than a handful of relevant objects in frame;
 # capping detections lower trims NMS/post-processing work.
 MODEL_MAX_DET = 20
@@ -174,6 +180,9 @@ class YoloThread(QThread):
         self.model = None
         self.class_ids = []
         self.model_ready = False
+        model_thresholds = load_model_thresholds()
+        self.conf = model_thresholds["conf"]
+        self.iou = model_thresholds["iou"]
 
         self._stop_requested = Event()
         self._frame_ready = Event()
@@ -196,6 +205,10 @@ class YoloThread(QThread):
         self.last_detections = []
         self._track_memory = []
         self.inference_fps = 0.0
+        self._inference_count = 0
+        self._inference_ms = 0.0
+        self._inference_ms_avg = 0.0
+        self._source_frames_skipped = 0
         self._thresholds = load_distance_thresholds()
         self._focal_length = load_camera_settings()["focal_length"]
         self._object_heights = load_object_heights()
@@ -258,8 +271,8 @@ class YoloThread(QThread):
         with inference_context:
             return self.model(
                 frame,
-                conf=min(CLASS_CONF.values()),
-                iou=MODEL_IOU,
+                conf=self.conf,
+                iou=self.iou,
                 imgsz=MODEL_IMGSZ,
                 max_det=MODEL_MAX_DET,
                 classes=self.class_ids or None,
@@ -358,6 +371,10 @@ class YoloThread(QThread):
                 return False
             if frame_number == self._source_frame_number:
                 return False
+            if self._source_frame_number >= 0 and frame_number > self._source_frame_number + 1:
+                self._source_frames_skipped += (
+                    frame_number - self._source_frame_number - 1
+                )
             self._source_frame_number = frame_number
             self._frame = frame
             self._frame_display_transform = display_transform
@@ -500,6 +517,15 @@ class YoloThread(QThread):
                 )
                 elapsed = max(time.perf_counter() - started_at, 1e-6)
                 self.inference_fps = 1.0 / elapsed
+                elapsed_ms = elapsed * 1000.0
+                self._inference_count += 1
+                self._inference_ms = elapsed_ms
+                if self._inference_ms_avg <= 0:
+                    self._inference_ms_avg = elapsed_ms
+                else:
+                    self._inference_ms_avg = (
+                        self._inference_ms_avg * 0.8 + elapsed_ms * 0.2
+                    )
                 last_inference_at = time.monotonic()
             except Exception as error:
                 self.error_ready.emit(f"YOLO error: {error}")
@@ -515,6 +541,20 @@ class YoloThread(QThread):
             self.result_ready.emit(
                 self._format_result(detections, thresholds, use_zone=use_zone)
             )
+
+    @property
+    def performance_stats(self):
+        """Return detector counters without touching the model thread."""
+        with self._lock:
+            return {
+                "inference_count": self._inference_count,
+                "inference_ms": self._inference_ms,
+                "inference_ms_avg": self._inference_ms_avg,
+                "inference_fps": self.inference_fps,
+                "source_frames_skipped": self._source_frames_skipped,
+                "device": self.device or "unknown",
+            }
+
     def _update_zone(self, shape):
         now = time.monotonic()
         if now - self._zone_last_check < FILE_CHECK_INTERVAL_S:
@@ -612,7 +652,7 @@ class YoloThread(QThread):
                 if label not in REAL_HEIGHT:
                     continue
                 score = float(box.conf[0])
-                if score < CLASS_CONF.get(label, 1.0):
+                if score < self.conf:
                     continue
 
                 model_box = tuple(map(int, box.xyxy[0]))
@@ -808,6 +848,14 @@ class YoloThread(QThread):
         with self._lock:
             self._thresholds = {"danger": float(danger), "warning": float(warning)}
         self._thresholds_last_check = time.monotonic()
+
+    def update_model_thresholds(self, conf, iou):
+        """Apply YOLO conf/IoU values without reloading the model."""
+        values = normalize_model_thresholds(conf, iou)
+        with self._lock:
+            self.conf = values["conf"]
+            self.iou = values["iou"]
+        return values
 
     def update_camera_settings(self, focal_length):
         """Apply camera calibration without restarting the detection thread."""

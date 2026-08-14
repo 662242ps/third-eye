@@ -1,7 +1,6 @@
 """Persisted on/off state for the siren and voice alert channels."""
 import json
 import math
-import re
 from pathlib import Path
 
 
@@ -52,7 +51,7 @@ def _normalize(data):
         voice_volume = _as_volume(data.get("voice_volume", 100))
     except AttributeError:
         return DEFAULT_ALERT_SETTINGS.copy()
-    if not re.fullmatch(r"th_[fm]_[12]", voice_model):
+    if voice_model != "th_m_1":
         voice_model = DEFAULT_ALERT_SETTINGS["voice_model"]
     return {
         "siren_enabled": siren_enabled,

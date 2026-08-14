@@ -52,6 +52,11 @@ class CaptureThread(QThread):
         self._latest_number = -1
         self._seek_request = None
         self._paused = False
+        self._stats_started_at = time.monotonic()
+        self._frames_read = 0
+        self._frames_published = 0
+        self._frames_skipped = 0
+        self._read_failures = 0
 
     def run(self):
         capture = None
@@ -137,6 +142,7 @@ class CaptureThread(QThread):
                 # falls behind, skip only a bounded number of frames per loop.
                 # This reduces decode/CPU pressure without creating the long
                 # grab burst that previously made the preview look frozen.
+                skipped = 0
                 if self.is_video:
                     now = time.monotonic()
                     target_frame = clock_frame + int(
@@ -169,6 +175,8 @@ class CaptureThread(QThread):
                 else:
                     ok, frame = capture.read()
                 if not ok:
+                    with self._lock:
+                        self._read_failures += 1
                     if self.is_video:
                         try:
                             position = capture.get(cv2.CAP_PROP_POS_FRAMES)
@@ -206,6 +214,8 @@ class CaptureThread(QThread):
                     return
 
                 read_failures = 0
+                with self._lock:
+                    self._frames_read += skipped + 1
 
                 original_frame = frame
                 # Prepare the display frame and its coordinate transform in
@@ -243,6 +253,8 @@ class CaptureThread(QThread):
                     self._latest_model_frame = model_frame
                     self._latest_model_transform = model_transform
                     self._latest_number = frame_number
+                    self._frames_published += 1
+                    self._frames_skipped += skipped
                 frame_number += 1
                 end_emitted = False
         except Exception as error:
@@ -272,6 +284,19 @@ class CaptureThread(QThread):
                 self._latest_number,
                 self._latest_model_transform,
             )
+
+    @property
+    def performance_stats(self):
+        """Return inexpensive counters for the UI diagnostics line."""
+        with self._lock:
+            elapsed = max(time.monotonic() - self._stats_started_at, 1e-6)
+            return {
+                "frames_read": self._frames_read,
+                "frames_published": self._frames_published,
+                "frames_skipped": self._frames_skipped,
+                "read_failures": self._read_failures,
+                "capture_fps": self._frames_published / elapsed,
+            }
 
     def pause(self):
         with self._lock:

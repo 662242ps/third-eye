@@ -182,7 +182,7 @@ class MainWindow(QMainWindow):
         self.capture = None
         self._last_capture_frame_number = -1
         self.current_frame = None
-        self.last_time = time.time()
+        self.last_time = time.monotonic()
         self.fps = 0.0
         self.source_name = "No source"
         self.last_info = ""
@@ -199,6 +199,9 @@ class MainWindow(QMainWindow):
         self.video_fps = 0.0
         self.video_slider_dragging = False
         self._last_ui_status_update = 0.0
+        self._display_window_started = time.monotonic()
+        self._display_frame_count = 0
+        self._display_fps = 0.0
         self._last_detection_counts = None
         self._last_video_time_text = None
         self._last_alert_html = None
@@ -666,7 +669,7 @@ class MainWindow(QMainWindow):
         self.yolo.set_frame_source(self.capture.get_latest_model)
         self.voice_announcer.set_live_source(True)
         self._last_capture_frame_number = -1
-        self.last_time = time.time()
+        self.last_time = time.monotonic()
         self.source_name = f"Camera {camera_index}"
         self.camera_badge.setText("กล้อง เปิด")
         self.camera_badge.setStyleSheet("background:#123524; color:#86EFAC; border:1px solid #22C55E; border-radius:8px; padding:6px 10px; font-size:12px; font-weight:700;")
@@ -740,7 +743,7 @@ class MainWindow(QMainWindow):
         self.yolo.set_frame_source(self.capture.get_latest_model)
         self.voice_announcer.set_live_source(True)
         self._last_capture_frame_number = -1
-        self.last_time = time.time()
+        self.last_time = time.monotonic()
         self.source_name = Path(path).name
         self.source_metric.value_label.setText(self.source_name)
         self.timer.start(_video_timer_interval(self.video_fps))
@@ -783,6 +786,9 @@ class MainWindow(QMainWindow):
 
     def _reset_display_throttle(self):
         self._last_ui_status_update = 0.0
+        self._display_window_started = time.monotonic()
+        self._display_frame_count = 0
+        self._display_fps = 0.0
         self._last_detection_counts = None
         self._last_video_time_text = None
 
@@ -796,7 +802,7 @@ class MainWindow(QMainWindow):
             self.yolo.clear_frame()
         self.video_slider_dragging = False
         self._last_capture_frame_number = -1
-        self.last_time = time.time()
+        self.last_time = time.monotonic()
         self.timer.start(_video_timer_interval(self.video_fps))
 
     def open_test_image(self):
@@ -1187,6 +1193,7 @@ class MainWindow(QMainWindow):
         if frame_number == self._last_capture_frame_number:
             return
         self._last_capture_frame_number = frame_number
+        self._display_frame_count += 1
 
         # CaptureThread publishes immutable frame references. Keep the raw
         # frame for zone previews and make only one drawing copy for the UI.
@@ -1355,13 +1362,22 @@ class MainWindow(QMainWindow):
                 pixmap.scaled(self.video.size(), Qt.KeepAspectRatio)
             )
         if draw_zone:
-            now = time.time()
+            now = time.monotonic()
             self.fps = 1.0 / max(now - self.last_time, 1e-6)
             self.last_time = now
             if now - self._last_ui_status_update >= UI_STATUS_UPDATE_INTERVAL_S:
-                ai_fps = self.yolo.inference_fps if self.yolo is not None else 0.0
+                display_elapsed = max(now - self._display_window_started, 1e-6)
+                self._display_fps = self._display_frame_count / display_elapsed
+                self._display_frame_count = 0
+                self._display_window_started = now
+                ai_stats = (
+                    self.yolo.performance_stats
+                    if self.yolo is not None
+                    else {}
+                )
+                ai_fps = ai_stats.get("inference_fps", 0.0)
                 self.fps_metric.value_label.setText(
-                    f"{self.fps:.1f} / {ai_fps:.1f}"
+                    f"{self._display_fps:.1f} / {ai_fps:.1f}"
                 )
                 if hasattr(self, "bottom_status"):
                     model_name = self.model_name
@@ -1371,10 +1387,21 @@ class MainWindow(QMainWindow):
                         else "CPU"
                     )
                     audio_state = "เปิด" if self.voice_announcer.enabled else "ปิด"
-                    self.bottom_status.setText(
-                        f"แหล่งภาพ: {self.source_name} | โมเดล: {model_name} | "
-                        f"FPS: {self.fps:.1f} | AI: {device_name} | โซน: เปิด | เสียง: {audio_state}"
+                    capture_stats = (
+                        self.capture.performance_stats
+                        if self.capture is not None
+                        else {}
                     )
+                    skipped = int(capture_stats.get("frames_skipped", 0))
+                    skipped += int(ai_stats.get("source_frames_skipped", 0))
+                    latency = ai_stats.get("inference_ms_avg", 0.0)
+                    read_failures = int(capture_stats.get("read_failures", 0))
+                    self.bottom_status.setText(
+                    f"แหล่งภาพ: {self.source_name} | โมเดล: {self.model_name} | "
+                    f"แสดง: {self._display_fps:.1f} FPS | AI: {device_name} "
+                    f"{latency:.0f} ms | ข้าม: {skipped} | อ่านผิดพลาด: {read_failures} | "
+                    f"เสียง: {audio_state}"
+                )
                 self._last_ui_status_update = now
             if self.last_info != self._last_alert_html:
                 self.alert.setHtml(self.last_info)
@@ -1508,7 +1535,7 @@ class MainWindow(QMainWindow):
                 value.get("voice_volume", 100),
             )
         elif kind == "model":
-            self.switch_model(value)
+            self.on_model_settings_saved(value)
 
     def on_camera_settings_saved(self, camera_index, focal_length, object_heights=None):
         if self.yolo is not None:
@@ -1521,6 +1548,23 @@ class MainWindow(QMainWindow):
         )
         self.alert.setHtml(self.last_info)
         self._last_alert_html = self.last_info
+
+    def on_model_settings_saved(self, value):
+        """Apply model selection or inference thresholds saved from settings."""
+        if not isinstance(value, dict):
+            self.switch_model(value)
+            return
+        if value.get("changed"):
+            self.switch_model(value["path"])
+            return
+        if self.yolo is not None:
+            self.yolo.update_model_thresholds(value["conf"], value["iou"])
+        self.last_info = (
+            "<span style='color:#e5e7eb;'>บันทึกค่าโมเดลแล้ว: "
+            f"conf {value['conf']:.2f}, IoU {value['iou']:.2f}</span>"
+        )
+        self._last_alert_html = self.last_info
+        self.alert.setHtml(self.last_info)
 
     def switch_model(self, relative_path):
         """Restart the detection thread on the newly selected model."""

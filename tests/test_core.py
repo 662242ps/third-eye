@@ -5,7 +5,10 @@ from tempfile import TemporaryDirectory
 
 from vision.alert_config import _normalize
 from vision.alert_sound import ALARM_PROFILES
-from vision.camera_config import _normalize as normalize_camera
+from vision.camera_config import (
+    _normalize as normalize_camera,
+    estimate_focal_length,
+)
 from vision.distance_config import _normalize_thresholds
 from vision.frame_utils import letterbox, letterbox_with_meta, unletterbox_box
 from vision.object_height_config import DEFAULT_OBJECT_HEIGHTS, _normalize as normalize_object_heights
@@ -31,7 +34,12 @@ from vision.yolo_thread import (
     MODEL_IMGSZ,
     YoloThread,
 )
-from vision.model_config import DEFAULT_MODEL_RELATIVE
+from vision.model_config import (
+    DEFAULT_MODEL_CONF,
+    DEFAULT_MODEL_IOU,
+    DEFAULT_MODEL_RELATIVE,
+    normalize_model_thresholds,
+)
 from ui.main_window import DISPLAY_FRAME_SIZE, MODEL_FRAME_SIZE, _video_timer_interval
 
 
@@ -78,6 +86,11 @@ class CoreLogicTests(unittest.TestCase):
             5.0,
         )
 
+    def test_focal_length_calibration_formula(self):
+        self.assertEqual(estimate_focal_length(20, 60, 1.5), 800.0)
+        with self.assertRaises(ValueError):
+            estimate_focal_length(0, 60, 1.5)
+
     def test_object_heights_are_complete_and_safe(self):
         values = normalize_object_heights({"car": 1.75, "truck": "bad"})
         self.assertEqual(values["car"], 1.75)
@@ -114,6 +127,16 @@ class CoreLogicTests(unittest.TestCase):
     def test_inference_size_is_fixed_to_640(self):
         self.assertEqual(MODEL_IMGSZ, 640)
         self.assertEqual(DEFAULT_MODEL_RELATIVE, "model5_150/best.pt")
+
+    def test_model_thresholds_are_normalized(self):
+        self.assertEqual(
+            normalize_model_thresholds(1.5, -1),
+            {"conf": DEFAULT_MODEL_CONF, "iou": DEFAULT_MODEL_IOU},
+        )
+        self.assertEqual(
+            normalize_model_thresholds(0.42, 0.67),
+            {"conf": 0.42, "iou": 0.67},
+        )
 
     def test_cpu_inference_interval_is_50ms(self):
         self.assertEqual(CPU_INFERENCE_INTERVAL_S, 0.05)
@@ -195,6 +218,12 @@ class CoreLogicTests(unittest.TestCase):
         self.assertLess(SEGMENT_TRIM_THRESHOLD, 256)
         self.assertEqual(SEGMENT_TEXT["meter"], "\u0e40\u0e21\u0e15\u0e23   ")
         self.assertEqual(SEGMENT_TTS_TEXT["meter"], "\u0e40\u0e21\u0e49\u0e15")
+
+    def test_only_male_voice_is_supported(self):
+        self.assertEqual(
+            _normalize({"voice_model": "removed_voice"})["voice_model"],
+            "th_m_1",
+        )
 
     def test_runtime_voice_does_not_load_tts_model(self):
         announcer = VoiceAnnouncer()

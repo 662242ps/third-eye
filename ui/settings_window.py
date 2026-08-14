@@ -22,8 +22,10 @@ from PyQt5.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QMainWindow,
     QPushButton,
+    QSpinBox,
     QSlider,
     QStackedWidget,
     QVBoxLayout,
@@ -31,17 +33,38 @@ from PyQt5.QtWidgets import (
 )
 
 from ui.icons import icon
-from vision.alert_config import load_alert_settings, save_alert_settings
-from vision.camera_config import load_camera_settings, save_camera_settings
-from vision.distance_config import load_distance_thresholds, save_distance_thresholds
+from vision.alert_config import (
+    DEFAULT_ALERT_SETTINGS,
+    load_alert_settings,
+    save_alert_settings,
+)
+from vision.camera_config import (
+    DEFAULT_CAMERA_SETTINGS,
+    estimate_focal_length,
+    load_camera_settings,
+    save_camera_settings,
+)
+from vision.distance_config import (
+    DEFAULT_THRESHOLDS,
+    load_distance_thresholds,
+    save_distance_thresholds,
+)
 from vision.frame_utils import letterbox_with_meta
 from vision.model_config import (
+    DEFAULT_MODEL_CONF,
+    DEFAULT_MODEL_IOU,
+    DEFAULT_MODEL_RELATIVE,
     import_model_file,
     list_available_models,
     load_model_settings,
+    load_model_thresholds,
     save_model_settings,
 )
-from vision.object_height_config import load_object_heights, save_object_heights
+from vision.object_height_config import (
+    DEFAULT_OBJECT_HEIGHTS,
+    load_object_heights,
+    save_object_heights,
+)
 from vision.voice_segments import available_voice_models
 
 
@@ -167,6 +190,11 @@ class DistancePage(BasePage):
         return result
 
 
+    def reset_values(self):
+        self.danger.setValue(DEFAULT_THRESHOLDS["danger"])
+        self.warning.setValue(DEFAULT_THRESHOLDS["warning"])
+
+
 class CameraPage(BasePage):
     def __init__(self):
         super().__init__(
@@ -178,6 +206,10 @@ class CameraPage(BasePage):
         form = QFormLayout(card)
         form.setContentsMargins(22, 20, 22, 20)
         form.setSpacing(16)
+        self.camera_index_spin = QSpinBox()
+        self.camera_index_spin.setRange(0, 9)
+        self.camera_index_spin.setToolTip("Camera device number used by OpenCV")
+        form.addRow("Camera index", self.camera_index_spin)
         self.focal = QDoubleSpinBox()
         self.focal.setRange(1, 10000)
         self.focal.setDecimals(1)
@@ -204,6 +236,28 @@ class CameraPage(BasePage):
             self.heights[label] = box
             form.addRow(f"ความสูง{title}", box)
 
+        # A small calibration helper turns one measured object into a useful
+        # focal-length estimate: focal = distance * box_height / real_height.
+        self.calibration_object = QComboBox()
+        for label, title in labels.items():
+            self.calibration_object.addItem(title, label)
+        self.calibration_distance = QDoubleSpinBox()
+        self.calibration_distance.setRange(0.1, 200.0)
+        self.calibration_distance.setDecimals(2)
+        self.calibration_distance.setValue(20.0)
+        self.calibration_distance.setSuffix(" m")
+        self.calibration_box_height = QDoubleSpinBox()
+        self.calibration_box_height.setRange(1.0, 2000.0)
+        self.calibration_box_height.setDecimals(1)
+        self.calibration_box_height.setValue(60.0)
+        self.calibration_box_height.setSuffix(" px")
+        self.calibrate_button = QPushButton("Calculate focal length")
+        self.calibrate_button.clicked.connect(self.calculate_focal_length)
+        form.addRow("Calibration object", self.calibration_object)
+        form.addRow("Known distance", self.calibration_distance)
+        form.addRow("Measured box height", self.calibration_box_height)
+        form.addRow("", self.calibrate_button)
+
         note = QLabel(
             "หมายเหตุ: ค่าเหล่านี้เป็นความสูงจริงโดยประมาณของวัตถุ "
             "หากระยะคลาดเคลื่อน ให้ปรับค่าของประเภทวัตถุนั้นโดยตรง"
@@ -217,17 +271,42 @@ class CameraPage(BasePage):
         self.body.addWidget(self.status)
         values = load_camera_settings()
         self.camera_index = values["camera_index"]
+        self.camera_index_spin.setValue(self.camera_index)
         self.focal.setValue(values["focal_length"])
         self.body.addStretch()
 
     def apply(self):
-        camera = save_camera_settings(self.camera_index, self.focal.value())
+        camera = save_camera_settings(
+            self.camera_index_spin.value(), self.focal.value()
+        )
         object_heights = save_object_heights(
             {label: box.value() for label, box in self.heights.items()}
         )
         result = {**camera, "object_heights": object_heights}
         self.status.setText("บันทึกค่าคำนวณระยะและความสูงวัตถุแล้ว")
         return result
+
+
+    def calculate_focal_length(self):
+        label = self.calibration_object.currentData()
+        object_height = self.heights.get(label)
+        if object_height is None or object_height.value() <= 0:
+            self.status.setText("Calibration failed: object height is invalid")
+            return
+        focal = estimate_focal_length(
+            self.calibration_distance.value(),
+            self.calibration_box_height.value(),
+            object_height.value(),
+        )
+        self.focal.setValue(focal)
+        self.status.setText(f"Estimated focal length: {focal:.1f} px")
+
+    def reset_values(self):
+        self.camera_index = DEFAULT_CAMERA_SETTINGS["camera_index"]
+        self.camera_index_spin.setValue(DEFAULT_CAMERA_SETTINGS["camera_index"])
+        self.focal.setValue(DEFAULT_CAMERA_SETTINGS["focal_length"])
+        for label, box in self.heights.items():
+            box.setValue(DEFAULT_OBJECT_HEIGHTS[label])
 
 
 class ModelPage(BasePage):
@@ -244,12 +323,36 @@ class ModelPage(BasePage):
         layout.addWidget(QLabel("โมเดลที่ใช้งาน"))
         layout.addWidget(self.combo)
         layout.addWidget(self.add_button)
+        threshold_form = QFormLayout()
+        self.conf_spin = QDoubleSpinBox()
+        self.conf_spin.setRange(0.01, 0.99)
+        self.conf_spin.setSingleStep(0.01)
+        self.conf_spin.setDecimals(2)
+        self.conf_spin.setToolTip("ความมั่นใจขั้นต่ำของวัตถุที่ยอมรับ")
+        self.iou_spin = QDoubleSpinBox()
+        self.iou_spin.setRange(0.01, 0.99)
+        self.iou_spin.setSingleStep(0.01)
+        self.iou_spin.setDecimals(2)
+        self.iou_spin.setToolTip("ค่า IoU สำหรับตัดกรอบซ้ำด้วย NMS")
+        threshold_form.addRow("Confidence (conf)", self.conf_spin)
+        threshold_form.addRow("IoU (NMS)", self.iou_spin)
+        layout.addLayout(threshold_form)
+        hint = QLabel(
+            "conf สูง = กรองวัตถุที่ไม่มั่นใจมากขึ้น | IoU สูง = ยอมให้กรอบซ้อนกันได้มากขึ้น"
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         self.body.addWidget(card)
         self.status = QLabel("")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
         self.body.addWidget(self.status)
         self.initial, _ = load_model_settings()
+        self.initial_thresholds = load_model_thresholds()
+        thresholds = self.initial_thresholds
+        self.conf_spin.setValue(thresholds["conf"])
+        self.iou_spin.setValue(thresholds["iou"])
         self.reload()
         self.body.addStretch()
 
@@ -283,8 +386,21 @@ class ModelPage(BasePage):
         if not relative:
             self.status.setText("ไม่พบโมเดล .pt")
             return None
-        save_model_settings(relative)
-        return {"path": relative, "changed": relative != self.initial}
+        thresholds = save_model_settings(
+            relative, self.conf_spin.value(), self.iou_spin.value()
+        )
+        return {
+            "path": relative,
+            "changed": relative != self.initial,
+            **thresholds,
+            "thresholds_changed": thresholds != self.initial_thresholds,
+        }
+
+
+    def reset_values(self):
+        self.reload(DEFAULT_MODEL_RELATIVE)
+        self.conf_spin.setValue(DEFAULT_MODEL_CONF)
+        self.iou_spin.setValue(DEFAULT_MODEL_IOU)
 
 
 class AudioPage(BasePage):
@@ -301,7 +417,7 @@ class AudioPage(BasePage):
         self.voice_volume, self.voice_volume_label = self._volume_row()
         self.combo = QComboBox()
         segment_dir = PROJECT_ROOT / "assets" / "voice" / "segments"
-        names = {"th_f_1":"เสียงผู้หญิง 1", "th_m_1":"เสียงผู้ชาย 1"}
+        names = {"th_m_1":"เสียงผู้ชาย 1"}
         for model_name in available_voice_models(segment_dir):
             self.combo.addItem(
                 f"{names.get(model_name, model_name)} ({model_name})",
@@ -366,6 +482,16 @@ class AudioPage(BasePage):
     @staticmethod
     def _update_volume_label(slider, label):
         label.setText(f"{slider.value()}%")
+
+
+    def reset_values(self):
+        self.siren.setChecked(DEFAULT_ALERT_SETTINGS["siren_enabled"])
+        self.voice.setChecked(DEFAULT_ALERT_SETTINGS["voice_enabled"])
+        self.siren_volume.setValue(DEFAULT_ALERT_SETTINGS["siren_volume"])
+        self.voice_volume.setValue(DEFAULT_ALERT_SETTINGS["voice_volume"])
+        index = self.combo.findData(DEFAULT_ALERT_SETTINGS["voice_model"])
+        if index >= 0:
+            self.combo.setCurrentIndex(index)
 
 
 class ZonePage(BasePage):
@@ -578,6 +704,15 @@ class ZonePage(BasePage):
         self.zone_saved.emit()
         return True
 
+    def reset_values(self):
+        points = self.read_zone(DEFAULT_ZONE)
+        if points:
+            self.points = points
+        index = self.preset.findText(DEFAULT_ZONE.name)
+        if index >= 0:
+            self.preset.setCurrentIndex(index)
+        self.update_view()
+
     def _save_file(self, path):
         ZONE_DIR.mkdir(exist_ok=True)
         with Path(path).open("w", encoding="utf-8") as file:
@@ -653,6 +788,9 @@ class SettingsWindow(QMainWindow):
         self.status.setObjectName("status")
         footer_layout.addWidget(self.status)
         footer_layout.addStretch()
+        reset = QPushButton("Reset defaults")
+        reset.setObjectName("quiet")
+        reset.clicked.connect(self.reset_to_defaults)
         cancel = QPushButton("ยกเลิก")
         cancel.setObjectName("quiet")
         cancel.clicked.connect(self.close)
@@ -660,10 +798,28 @@ class SettingsWindow(QMainWindow):
         save.setObjectName("primary")
         save.setIcon(icon("save", "#FFFFFF"))
         save.clicked.connect(self.apply_all)
+        footer_layout.addWidget(reset)
         footer_layout.addWidget(cancel)
         footer_layout.addWidget(save)
         layout.addWidget(footer)
         self.setCentralWidget(root)
+
+    def reset_to_defaults(self):
+        answer = QMessageBox.question(
+            self,
+            "Reset settings",
+            "Reset distance, zone, camera, model, and audio settings to defaults?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        for page in self.pages:
+            reset = getattr(page, "reset_values", None)
+            if reset is not None:
+                reset()
+        self.apply_all()
+        self.status.setText("Settings restored to defaults")
 
     def set_zone_image(self, image_path=None):
         """Refresh the zone image whenever the settings window is reopened."""
@@ -675,9 +831,15 @@ class SettingsWindow(QMainWindow):
             if result is None:
                 self.status.setText("กรุณาตรวจสอบค่าที่กรอกก่อนบันทึก")
                 return
-            if isinstance(page, ModelPage) and result.get("changed"):
-                self.settings_saved.emit("model", result["path"])
+            if isinstance(page, ModelPage) and (
+                result.get("changed") or result.get("thresholds_changed")
+            ):
+                self.settings_saved.emit("model", result)
                 page.initial = result["path"]
+                page.initial_thresholds = {
+                    "conf": result["conf"],
+                    "iou": result["iou"],
+                }
             elif isinstance(page, DistancePage):
                 self.settings_saved.emit("distance", result)
             elif isinstance(page, CameraPage):

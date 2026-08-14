@@ -49,7 +49,7 @@ SEGMENT_GAP_MS = 70
 SEGMENT_FINAL_PADDING_MS = 120
 # Bump this whenever the generated segment speed/padding policy changes so an
 # old slow combined WAV in %TEMP% cannot be reused by the new code.
-SEGMENT_CACHE_VERSION = "fast075-meter-maet-v8"
+SEGMENT_CACHE_VERSION = "male-only-v11"
 # Speech is enabled again, but runtime playback remains WAV-only. The Vachana
 # model is used only by tools/generate_voice_segments.py during asset creation;
 # live detection never loads or synthesizes with that model.
@@ -58,12 +58,12 @@ SEGMENT_VOICE_ONLY = True
 
 # Announce at most once per this many seconds for the same object/status.
 # A longer cooldown prevents distance noise from becoming a stream of alerts.
-COOLDOWN_S = 5.0
+COOLDOWN_S = 8.0
 # On top of the cooldown, don't repeat for the same label unless its
 # distance has moved at least this many meters from where it was last
 # announced -- an object parked at a steady distance stays quiet instead of
 # re-announcing every COOLDOWN_S.
-REPEAT_DISTANCE_M = 3.0
+REPEAT_DISTANCE_M = 5.0
 # Keep the last alert alive briefly when a detector result disappears for a
 # frame or two. This avoids treating a blinking detection as a new object.
 LOST_GRACE_S = 1.5
@@ -291,7 +291,7 @@ class VoiceAnnouncer:
 
     def set_voice_model(self, model_name):
         model_name = str(model_name or "th_m_1").strip()
-        if not model_name.startswith("th_"):
+        if model_name != "th_m_1":
             model_name = "th_m_1"
         model_path = TTS_DIR / "voices" / f"{model_name}.onnx"
         segment_path = SEGMENT_VOICE_DIR / model_name
