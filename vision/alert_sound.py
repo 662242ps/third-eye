@@ -87,6 +87,7 @@ class DangerAlarm:
     def __init__(self):
         self.muted = False
         self.enabled = True
+        self.volume = 100
         self._active = False
         self._level = "DANGER"
         self._winsound = None
@@ -101,18 +102,8 @@ class DangerAlarm:
                 # changing the repository or relying on a writable install
                 # directory.  They are reused on subsequent app launches.
                 sound_dir = Path(tempfile.gettempdir()) / "third_eye_siren"
-                for level, profile in ALARM_PROFILES.items():
-                    sound_path = sound_dir / f"siren_{level.lower()}_v1.wav"
-                    try:
-                        self._sound_files[level] = _write_siren_wav(
-                            sound_path, profile
-                        )
-                    except (OSError, ValueError, wave.Error):
-                        # A read-only temp directory should not prevent the
-                        # rest of the application from starting.  Retain the
-                        # original danger sound as a safe fallback.
-                        if level == "DANGER" and ALERT_SOUND_FILE.is_file():
-                            self._sound_files[level] = ALERT_SOUND_FILE
+                self._sound_dir = sound_dir
+                self._rebuild_sound_files()
             except ImportError:
                 self._winsound = None
 
@@ -133,12 +124,55 @@ class DangerAlarm:
             self._active = False
             self._play(False)
 
+    def set_volume(self, volume):
+        """Set siren loudness without changing warning/danger profiles."""
+        try:
+            volume = int(round(float(volume)))
+        except (TypeError, ValueError):
+            volume = 100
+        self.volume = max(0, min(100, volume))
+        if self._winsound is None:
+            return
+        was_active = self._active
+        if was_active:
+            self._active = False
+            self._play(False)
+        self._rebuild_sound_files()
+        if was_active and self.volume > 0:
+            self._active = True
+            self._play(True)
+
+    def _rebuild_sound_files(self):
+        self._sound_files = {}
+        sound_dir = getattr(self, "_sound_dir", None)
+        if sound_dir is None:
+            return
+        for level, profile in ALARM_PROFILES.items():
+            scaled_profile = dict(profile)
+            scaled_profile["volume"] = profile["volume"] * self.volume / 100.0
+            sound_path = sound_dir / f"siren_{level.lower()}_v2_{self.volume}.wav"
+            try:
+                self._sound_files[level] = _write_siren_wav(
+                    sound_path, scaled_profile
+                )
+            except (OSError, ValueError, wave.Error):
+                # A read-only temp directory should not prevent the
+                # application from starting. Retain the original danger
+                # sound as a safe fallback when available.
+                if level == "DANGER" and ALERT_SOUND_FILE.is_file():
+                    self._sound_files[level] = ALERT_SOUND_FILE
+
     def set_active(self, active, level="DANGER"):
         """Play the appropriate siren for the nearest WARNING/DANGER object."""
         level = str(level).upper()
         if level not in ALARM_PROFILES:
             level = "DANGER"
-        active = bool(active) and not self.muted and self.enabled
+        active = (
+            bool(active)
+            and self.volume > 0
+            and not self.muted
+            and self.enabled
+        )
         if active and level not in self._sound_files:
             active = False
 

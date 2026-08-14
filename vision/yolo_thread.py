@@ -4,6 +4,16 @@ from contextlib import nullcontext
 from pathlib import Path
 from threading import Event, Lock
 
+# Load Torch before Qt/OpenCV. On Windows, loading Qt first can make Torch's
+# c10.dll fail with WinError 1114 in entry points that import this module
+# directly (the main application already does this in main.py).
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
 import cv2
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -16,30 +26,25 @@ from vision.frame_utils import (
     unletterbox_box,
     unletterbox_points,
 )
+from vision.model_config import DEFAULT_MODEL_RELATIVE
+from vision.object_height_config import (
+    DEFAULT_OBJECT_HEIGHTS,
+    load_object_heights,
+)
 
 # Resizing/drawing is lightweight here. Let Torch own the CPU worker pool instead
 # of allowing OpenCV and Torch to oversubscribe the same cores.
 cv2.setNumThreads(1)
 
-try:
-    import torch
-except ImportError:
-    torch = None
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODEL_FILE = PROJECT_ROOT / "models" / "best.pt"
+MODEL_FILE = PROJECT_ROOT / "models" / DEFAULT_MODEL_RELATIVE
 ZONE_FILE = PROJECT_ROOT / "zones" / "active.txt"
 FILE_CHECK_INTERVAL_S = 0.75
 
-# Approximate real-world object heights in meters.
-REAL_HEIGHT = {
-    "person": 1.65,
-    "car": 1.50,
-    "truck": 2.80,
-    "motorcycle": 1.20,
-    "bus": 3.10,
-}
+# Approximate real-world object heights in metres. Keep this public alias for
+# compatibility with code that imports the calibration labels; the running
+# detector uses the user-editable values in ``self._object_heights``.
+REAL_HEIGHT = DEFAULT_OBJECT_HEIGHTS.copy()
 
 CLASS_ALIASES = {
     "motorbike": "motorcycle",
@@ -64,6 +69,10 @@ MODEL_IOU = 0.55
 # Road scenes rarely have more than a handful of relevant objects in frame;
 # capping detections lower trims NMS/post-processing work.
 MODEL_MAX_DET = 20
+# CPU inference is intentionally capped. The UI interpolates the last tracked
+# boxes between detections, so leaving a short gap after inference is smoother
+# overall than allowing inference to consume all CPU time.
+CPU_INFERENCE_INTERVAL_S = 0.05
 
 MIN_BOX_HEIGHT = 14
 SMOOTHING_ALPHA = 0.35
@@ -84,6 +93,10 @@ VELOCITY_SMOOTHING_ALPHA = 0.5
 # results). Beyond this the track is treated as stale and shown/matched at
 # its last known position instead of guessing further.
 MAX_PREDICTION_S = 0.4
+# Guard against a very small detector time delta producing an unrealistic
+# pixel velocity. Such a prediction can send a box far outside the frame and
+# make OpenCV spend excessive time clipping a draw operation.
+MAX_TRACK_SPEED_PX_S = 2500.0
 
 STATUS_STYLE = {
     "DANGER": {"color": (0, 0, 255), "html": "#ef4444", "thai": "อันตราย"},
@@ -100,8 +113,20 @@ LABEL_THAI = {
 }
 
 
+DEVICE_REQUEST = os.environ.get("THIRD_EYE_DEVICE", "auto").strip().lower()
+
+
 def _select_device():
-    if torch is not None and torch.cuda.is_available():
+    """Prefer CUDA when the installed Torch build can actually use it.
+
+    ``THIRD_EYE_DEVICE=cpu`` is useful for troubleshooting, while ``auto``
+    keeps the normal installation portable.  A request for GPU still falls
+    back safely when this machine has CPU-only Torch or no CUDA driver.
+    """
+    cuda_available = torch is not None and torch.cuda.is_available()
+    if DEVICE_REQUEST in {"cpu", "none"}:
+        return "cpu"
+    if cuda_available:
         return "cuda"
     return "cpu"
 
@@ -148,7 +173,6 @@ class YoloThread(QThread):
         # Heavy model loading is deferred to run() so the Qt UI remains
         # responsive while the model/device is initialized.
         self.device = None
-        self.use_half = False
         self.model = None
         self.class_ids = []
         self.model_ready = False
@@ -161,6 +185,12 @@ class YoloThread(QThread):
         self._frame_id = 0
         self._processed_frame_id = 0
         self._source_generation = 0
+        # Live capture is pulled directly by this worker. Keeping a single
+        # latest-frame source prevents the GUI timer from becoming the
+        # bottleneck that feeds inference.
+        self._frame_source = None
+        self._source_frame_number = -1
+        self._frame_display_transform = None
 
         self.zone = None
         self.zone_mtime = 0
@@ -170,16 +200,16 @@ class YoloThread(QThread):
         self.inference_fps = 0.0
         self._thresholds = load_distance_thresholds()
         self._focal_length = load_camera_settings()["focal_length"]
+        self._object_heights = load_object_heights()
         self._thresholds_mtime = 0
         self._thresholds_last_check = 0.0
 
     def _initialize_model(self):
         self.device = _select_device()
-        self.use_half = self.device == "cuda"
         if torch is not None:
             torch.set_grad_enabled(False)
-            if not self.use_half:
-                cpu_threads = max(1, min(4, os.cpu_count() or 2))
+            if self.device != "cuda":
+                cpu_threads = max(1, min(4, (os.cpu_count() or 2) - 1))
                 torch.set_num_threads(cpu_threads)
                 try:
                     torch.set_num_interop_threads(1)
@@ -230,7 +260,6 @@ class YoloThread(QThread):
                 max_det=MODEL_MAX_DET,
                 classes=self.class_ids or None,
                 device=self.device,
-                half=self.use_half,
                 augment=False,
                 verbose=False,
             )
@@ -242,6 +271,10 @@ class YoloThread(QThread):
         with self._lock:
             if self._stop_requested.is_set():
                 return False
+            if self._frame_source is not None:
+                # Live sources are pulled by run() in this worker. Rejecting
+                # GUI-pushed copies keeps one source of truth for frame IDs.
+                return False
             # CaptureThread publishes a frame reference and never mutates it
             # after publication. Keep the reference here; _detect() creates
             # its own 640x640 letterboxed buffer. Copying a 1080p frame on
@@ -252,11 +285,89 @@ class YoloThread(QThread):
         self._frame_ready.set()
         return True
 
+    def set_frame_source(self, source):
+        """Attach a thread-safe latest-frame provider for live sources.
+
+        ``source`` may return ``(frame, frame_number)`` like
+        ``CaptureThread.get_latest`` or ``(frame, frame_number, transform)``
+        like ``CaptureThread.get_latest_model``. The provider is called only
+        by this worker, while the GUI can independently read the same latest
+        display frame.
+        """
+        with self._lock:
+            self._frame_source = source
+            self._source_frame_number = -1
+            self._source_generation += 1
+            self._frame = None
+            self._frame_display_transform = None
+            self._processed_frame_id = self._frame_id
+            self.last_detections = []
+            self._track_memory = []
+        self._frame_ready.set()
+
+    def clear_frame_source(self):
+        """Detach a live provider before its capture thread is stopped."""
+        with self._lock:
+            self._frame_source = None
+            self._source_frame_number = -1
+            self._source_generation += 1
+            self._frame = None
+            self._frame_display_transform = None
+            self._processed_frame_id = self._frame_id
+            self.last_detections = []
+            self._track_memory = []
+        self._frame_ready.set()
+
+    @property
+    def frame_source_attached(self):
+        with self._lock:
+            return self._frame_source is not None
+
+    def _pull_source_frame(self):
+        """Pull one new frame from the attached provider, if available."""
+        with self._lock:
+            source = self._frame_source
+        if source is None:
+            return False
+        try:
+            source_result = source()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+        if not isinstance(source_result, (tuple, list)):
+            return False
+        if len(source_result) == 2:
+            frame, frame_number = source_result
+            display_transform = None
+        elif len(source_result) == 3:
+            frame, frame_number, display_transform = source_result
+        else:
+            return False
+        try:
+            frame_number = int(frame_number)
+        except (TypeError, ValueError):
+            return False
+        if frame is None or getattr(frame, "size", 0) == 0 or frame_number < 0:
+            return False
+
+        with self._lock:
+            if source is not self._frame_source:
+                return False
+            if frame_number == self._source_frame_number:
+                return False
+            self._source_frame_number = frame_number
+            self._frame = frame
+            self._frame_display_transform = display_transform
+            self._frame_uses_zone = True
+            self._frame_id += 1
+        return True
+
     def clear_frame(self):
         """Pause inference when no camera/video source is active."""
         with self._lock:
             self._source_generation += 1
             self._frame = None
+            self._frame_display_transform = None
+            self._source_frame_number = -1
             self._processed_frame_id = self._frame_id
             self.last_detections = []
             self._track_memory = []
@@ -320,6 +431,8 @@ class YoloThread(QThread):
             return track["box"]
 
         x1, y1, x2, y2 = track["box"]
+        vx = max(-MAX_TRACK_SPEED_PX_S, min(MAX_TRACK_SPEED_PX_S, float(vx)))
+        vy = max(-MAX_TRACK_SPEED_PX_S, min(MAX_TRACK_SPEED_PX_S, float(vy)))
         shift_x = vx * elapsed
         shift_y = vy * elapsed
         return (
@@ -335,8 +448,29 @@ class YoloThread(QThread):
         except Exception as error:
             self.error_ready.emit(f"YOLO model load error: {error}")
             return
+        last_inference_at = 0.0
         while not self._stop_requested.is_set():
-            self._frame_ready.wait(timeout=0.1)
+            if self.frame_source_attached:
+                # Polling one integer and one reference is cheap, and avoids
+                # queuing every camera frame through Qt. The next iteration
+                # always asks for the newest frame after inference completes.
+                if not self._pull_source_frame():
+                    if self._stop_requested.wait(0.01):
+                        break
+                    continue
+            else:
+                self._frame_ready.wait(timeout=0.1)
+
+            if self.device == "cpu" and last_inference_at:
+                remaining = CPU_INFERENCE_INTERVAL_S - (
+                    time.monotonic() - last_inference_at
+                )
+                if remaining > 0:
+                    if self._stop_requested.wait(remaining):
+                        break
+                    # Pick the newest frame after the throttle wait instead of
+                    # processing a stale snapshot.
+                    continue
 
             with self._lock:
                 if self._frame is None or self._frame_id == self._processed_frame_id:
@@ -346,6 +480,7 @@ class YoloThread(QThread):
                 # later does not mutate this local ndarray.
                 frame = self._frame
                 use_zone = self._frame_uses_zone
+                display_transform = self._frame_display_transform
                 source_generation = self._source_generation
                 self._processed_frame_id = self._frame_id
                 self._frame_ready.clear()
@@ -353,9 +488,15 @@ class YoloThread(QThread):
             try:
                 started_at = time.perf_counter()
                 thresholds = self._get_thresholds()
-                detections = self._detect(frame, thresholds, use_zone=use_zone)
+                detections = self._detect(
+                    frame,
+                    thresholds,
+                    use_zone=use_zone,
+                    display_transform=display_transform,
+                )
                 elapsed = max(time.perf_counter() - started_at, 1e-6)
                 self.inference_fps = 1.0 / elapsed
+                last_inference_at = time.monotonic()
             except Exception as error:
                 self.error_ready.emit(f"YOLO error: {error}")
                 time.sleep(0.1)
@@ -370,7 +511,6 @@ class YoloThread(QThread):
             self.result_ready.emit(
                 self._format_result(detections, thresholds, use_zone=use_zone)
             )
-
     def _update_zone(self, shape):
         now = time.monotonic()
         if now - self._zone_last_check < FILE_CHECK_INTERVAL_S:
@@ -411,13 +551,44 @@ class YoloThread(QThread):
             self._thresholds_mtime = mtime
         return self._thresholds
 
-    def _detect(self, frame, thresholds, use_zone=True):
+    @staticmethod
+    def _map_model_box_to_display(box, transform):
+        """Map a model-letterboxed box to the independently displayed frame."""
+        model = transform["model"]
+        display = transform["display"]
+        model_scale = max(float(model["scale"]), 1e-9)
+        display_scale = float(display["scale"])
+
+        def map_x(value):
+            source_x = (float(value) - float(model["offset_x"])) / model_scale
+            return int(round(source_x * display_scale + float(display["offset_x"])))
+
+        def map_y(value):
+            source_y = (float(value) - float(model["offset_y"])) / model_scale
+            return int(round(source_y * display_scale + float(display["offset_y"])))
+
+        x1, y1, x2, y2 = box
+        return map_x(x1), map_y(y1), map_x(x2), map_y(y2)
+
+    def _detect(self, frame, thresholds, use_zone=True, display_transform=None):
         danger_dist = thresholds["danger"]
         warning_dist = thresholds["warning"]
 
-        model_frame, transform = letterbox_with_meta(
-            frame, (MODEL_IMGSZ, MODEL_IMGSZ)
-        )
+        if frame.shape[:2] == (MODEL_IMGSZ, MODEL_IMGSZ):
+            # CaptureThread already prepared the exact model input. Avoid a
+            # second 640x640 allocation/copy on every inference cycle.
+            model_frame = frame
+            transform = {
+                "scale": 1.0,
+                "offset_x": 0,
+                "offset_y": 0,
+                "source_w": MODEL_IMGSZ,
+                "source_h": MODEL_IMGSZ,
+            }
+        else:
+            model_frame, transform = letterbox_with_meta(
+                frame, (MODEL_IMGSZ, MODEL_IMGSZ)
+            )
         if use_zone:
             self._update_zone(model_frame.shape)
         results = self._predict(model_frame)
@@ -450,12 +621,20 @@ class YoloThread(QThread):
                 if zone is not None and cv2.pointPolygonTest(zone, bottom_center, False) < 0:
                     continue
 
-                depth = (REAL_HEIGHT[label] * self._focal_length) / box_height
+                object_height = self._object_heights.get(
+                    label, DEFAULT_OBJECT_HEIGHTS.get(label, 1.0)
+                )
+                depth = (object_height * self._focal_length) / box_height
                 box_center_x = (x1 + x2) / 2.0
                 lateral_ratio = (box_center_x - principal_x) / self._focal_length
                 raw_distance = depth * (1 + lateral_ratio ** 2) ** 0.5
+                display_box = (
+                    self._map_model_box_to_display(model_box, display_transform)
+                    if display_transform is not None
+                    else unletterbox_box(model_box, transform)
+                )
                 detection = {
-                    "box": unletterbox_box(model_box, transform),
+                    "box": display_box,
                     "label": label,
                     "score": round(score, 2),
                     "raw_dist": raw_distance,
@@ -534,6 +713,8 @@ class YoloThread(QThread):
         prev_vx, prev_vy = previous.get("velocity", (0.0, 0.0))
         vx = VELOCITY_SMOOTHING_ALPHA * raw_vx + (1.0 - VELOCITY_SMOOTHING_ALPHA) * prev_vx
         vy = VELOCITY_SMOOTHING_ALPHA * raw_vy + (1.0 - VELOCITY_SMOOTHING_ALPHA) * prev_vy
+        vx = max(-MAX_TRACK_SPEED_PX_S, min(MAX_TRACK_SPEED_PX_S, vx))
+        vy = max(-MAX_TRACK_SPEED_PX_S, min(MAX_TRACK_SPEED_PX_S, vy))
         return (vx, vy)
 
     def _find_previous_detection(self, detection, used_previous, now):
@@ -628,6 +809,18 @@ class YoloThread(QThread):
         """Apply camera calibration without restarting the detection thread."""
         with self._lock:
             self._focal_length = float(focal_length)
+            self._track_memory = []
+
+    def update_object_heights(self, object_heights):
+        """Apply per-class real-world heights without restarting detection."""
+        with self._lock:
+            self._object_heights = {
+                label: float(value)
+                for label, value in object_heights.items()
+                if label in DEFAULT_OBJECT_HEIGHTS
+            }
+            for label, default in DEFAULT_OBJECT_HEIGHTS.items():
+                self._object_heights.setdefault(label, default)
             self._track_memory = []
 
     def invalidate_zone(self):

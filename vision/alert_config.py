@@ -1,5 +1,6 @@
 """Persisted on/off state for the siren and voice alert channels."""
 import json
+import math
 import re
 from pathlib import Path
 
@@ -12,6 +13,8 @@ DEFAULT_ALERT_SETTINGS = {
     "siren_enabled": True,
     "voice_enabled": True,
     "voice_model": "th_m_1",
+    "siren_volume": 100,
+    "voice_volume": 100,
 }
 
 
@@ -30,11 +33,23 @@ def _as_bool(value, default):
     return default
 
 
+def _as_volume(value, default=100):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return max(0, min(100, int(round(value))))
+
+
 def _normalize(data):
     try:
         siren_enabled = _as_bool(data.get("siren_enabled", True), True)
         voice_enabled = _as_bool(data.get("voice_enabled", True), True)
         voice_model = str(data.get("voice_model", "th_m_1")).strip() or "th_m_1"
+        siren_volume = _as_volume(data.get("siren_volume", 100))
+        voice_volume = _as_volume(data.get("voice_volume", 100))
     except AttributeError:
         return DEFAULT_ALERT_SETTINGS.copy()
     if not re.fullmatch(r"th_[fm]_[12]", voice_model):
@@ -43,6 +58,8 @@ def _normalize(data):
         "siren_enabled": siren_enabled,
         "voice_enabled": voice_enabled,
         "voice_model": voice_model,
+        "siren_volume": siren_volume,
+        "voice_volume": voice_volume,
     }
 
 
@@ -56,12 +73,20 @@ def load_alert_settings():
         return DEFAULT_ALERT_SETTINGS.copy()
 
 
-def save_alert_settings(siren_enabled, voice_enabled, voice_model="th_m_1"):
+def save_alert_settings(
+    siren_enabled,
+    voice_enabled,
+    voice_model="th_m_1",
+    siren_volume=100,
+    voice_volume=100,
+):
     settings = _normalize(
         {
             "siren_enabled": siren_enabled,
             "voice_enabled": voice_enabled,
             "voice_model": voice_model,
+            "siren_volume": siren_volume,
+            "voice_volume": voice_volume,
         }
     )
     SETTINGS_DIR.mkdir(exist_ok=True)

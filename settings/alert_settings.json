@@ -1,5 +1,7 @@
 {
   "siren_enabled": false,
   "voice_enabled": true,
-  "voice_model": "th_f_1"
+  "voice_model": "th_m_1",
+  "siren_volume": 100,
+  "voice_volume": 100
 }

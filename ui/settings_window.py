@@ -10,7 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,8 +24,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
-    QScrollArea,
-    QSpinBox,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -35,13 +34,15 @@ from ui.icons import icon
 from vision.alert_config import load_alert_settings, save_alert_settings
 from vision.camera_config import load_camera_settings, save_camera_settings
 from vision.distance_config import load_distance_thresholds, save_distance_thresholds
-from vision.frame_utils import letterbox
+from vision.frame_utils import letterbox_with_meta
 from vision.model_config import (
     import_model_file,
     list_available_models,
     load_model_settings,
     save_model_settings,
 )
+from vision.object_height_config import load_object_heights, save_object_heights
+from vision.voice_segments import available_voice_models
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,8 @@ DEFAULT_ZONE = ZONE_DIR / "default.txt"
 # place when the saved normalized coordinates are applied to live detection.
 VIEW_W = 640
 VIEW_H = 640
+PREVIEW_W = 640
+PREVIEW_H = 360
 
 
 STYLE = """
@@ -75,13 +78,15 @@ QComboBox QAbstractItemView { background:#111C2E; color:#F8FAFC; selection-backg
 QCheckBox { color:#F8FAFC; font-size:14px; spacing:10px; padding:8px 0; }
 QCheckBox::indicator { width:18px; height:18px; border:1px solid #64748B; border-radius:5px; background:#0B1220; }
 QCheckBox::indicator:checked { background:#2563EB; border:1px solid #60A5FA; }
+QSlider::groove:horizontal { height:6px; background:#334155; border-radius:3px; }
+QSlider::sub-page:horizontal { background:#2563EB; border-radius:3px; }
+QSlider::handle:horizontal { background:#F8FAFC; border:2px solid #2563EB; width:16px; margin:-6px 0; border-radius:9px; }
 QPushButton { background:#334155; color:#F8FAFC; border:0; border-radius:8px; padding:10px 16px; font-size:13px; font-weight:700; }
 QPushButton:hover { background:#475569; }
 QPushButton#primary { background:#2563EB; color:#FFFFFF; }
 QPushButton#primary:hover { background:#3B82F6; }
 QPushButton#quiet { background:transparent; color:#CBD5E1; border:1px solid #334155; }
 QPushButton#quiet:hover { background:#162238; }
-QScrollArea { border:0; background:#0B1220; }
 """
 
 
@@ -164,33 +169,65 @@ class DistancePage(BasePage):
 
 class CameraPage(BasePage):
     def __init__(self):
-        super().__init__("กล้องและการคำนวณระยะ", "เลือกกล้องและปรับ Focal Length ให้ตรงกับอุปกรณ์จริงเพื่อให้ค่าระยะมีความแม่นยำขึ้น")
+        super().__init__(
+            "การคำนวณระยะ",
+            "ปรับ Focal Length และความสูงจริงของวัตถุให้ตรงกับภาพจากอุปกรณ์ "
+            "เพื่อให้ระยะที่คำนวณได้แม่นยำขึ้น",
+        )
         card = QFrame(objectName="card")
         form = QFormLayout(card)
         form.setContentsMargins(22, 20, 22, 20)
         form.setSpacing(16)
-        self.camera = QSpinBox()
-        self.camera.setRange(0, 20)
-        self.camera.setToolTip("0 คือกล้องตัวแรก, 1 คือกล้องตัวถัดไป")
         self.focal = QDoubleSpinBox()
         self.focal.setRange(1, 10000)
         self.focal.setDecimals(1)
         self.focal.setSingleStep(10)
         self.focal.setSuffix(" px")
-        form.addRow("หมายเลขกล้อง", self.camera)
         form.addRow("Focal Length", self.focal)
+
+        self.heights = {}
+        labels = {
+            "car": "รถยนต์",
+            "truck": "รถบรรทุก",
+            "motorcycle": "รถจักรยานยนต์",
+            "bus": "รถบัส",
+            "person": "คน",
+        }
+        heights = load_object_heights()
+        for label, title in labels.items():
+            box = QDoubleSpinBox()
+            box.setRange(0.1, 10.0)
+            box.setDecimals(2)
+            box.setSingleStep(0.05)
+            box.setSuffix(" เมตร")
+            box.setToolTip("ความสูงจริงโดยประมาณของวัตถุ ใช้คำนวณระยะทาง")
+            box.setValue(heights[label])
+            self.heights[label] = box
+            form.addRow(f"ความสูง{title}", box)
+
+        note = QLabel(
+            "หมายเหตุ: ค่าเหล่านี้เป็นความสูงจริงโดยประมาณของวัตถุ "
+            "หากระยะคลาดเคลื่อน ให้ปรับค่าของประเภทวัตถุนั้นโดยตรง"
+        )
+        note.setObjectName("hint")
+        note.setWordWrap(True)
         self.body.addWidget(card)
+        self.body.addWidget(note)
         self.status = QLabel("")
         self.status.setObjectName("status")
         self.body.addWidget(self.status)
         values = load_camera_settings()
-        self.camera.setValue(values["camera_index"])
+        self.camera_index = values["camera_index"]
         self.focal.setValue(values["focal_length"])
         self.body.addStretch()
 
     def apply(self):
-        result = save_camera_settings(self.camera.value(), self.focal.value())
-        self.status.setText("บันทึกค่ากล้องแล้ว")
+        camera = save_camera_settings(self.camera_index, self.focal.value())
+        object_heights = save_object_heights(
+            {label: box.value() for label, box in self.heights.items()}
+        )
+        result = {**camera, "object_heights": object_heights}
+        self.status.setText("บันทึกค่าคำนวณระยะและความสูงวัตถุแล้ว")
         return result
 
 
@@ -253,7 +290,7 @@ class ModelPage(BasePage):
 
 class AudioPage(BasePage):
     def __init__(self):
-        super().__init__("เสียงแจ้งเตือน", "เปิดใช้ไซเรนหรือเสียงพูด และเลือกโมเดลเสียงภาษาไทยที่ติดตั้งอยู่ในโปรเจกต์")
+        super().__init__("เสียงแจ้งเตือน", "เปิดใช้ไซเรนหรือเสียงพูด ปรับระดับเสียง และเลือกเสียงภาษาไทยที่มีไฟล์พร้อมใช้งาน")
         card = QFrame(objectName="card")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(22, 18, 22, 18)
@@ -261,14 +298,23 @@ class AudioPage(BasePage):
         self.siren = QCheckBox("เสียงไซเรนเมื่ออยู่ในระยะอันตรายและระวัง")
         self.siren.setToolTip("ระวัง: เสียงเบาและเตือนห่างกว่า | อันตราย: เสียงดังและเตือนถี่กว่า")
         self.voice = QCheckBox("เสียงพูดแจ้งเตือนพร้อมชนิดวัตถุและระยะ")
+        self.siren_volume, self.siren_volume_label = self._volume_row()
+        self.voice_volume, self.voice_volume_label = self._volume_row()
         self.combo = QComboBox()
-        voice_dir = PROJECT_ROOT / "tts" / "voices"
-        names = {"th_f_1":"เสียงผู้หญิง 1", "th_m_1":"เสียงผู้ชาย 1", "th_f_2":"เสียงผู้หญิง 2"}
-        for path in sorted(voice_dir.glob("th_*.onnx")):
-            self.combo.addItem(f"{names.get(path.stem, path.stem)} ({path.stem})", path.stem)
+        segment_dir = PROJECT_ROOT / "assets" / "voice" / "segments"
+        names = {"th_f_1":"เสียงผู้หญิง 1", "th_m_1":"เสียงผู้ชาย 1"}
+        for model_name in available_voice_models(segment_dir):
+            self.combo.addItem(
+                f"{names.get(model_name, model_name)} ({model_name})",
+                model_name,
+            )
         layout.addWidget(self.siren)
+        layout.addWidget(QLabel("ระดับเสียงไซเรน"))
+        layout.addLayout(self._volume_layout(self.siren_volume, self.siren_volume_label))
         layout.addWidget(self.voice)
-        layout.addWidget(QLabel("โมเดลเสียงภาษาไทย"))
+        layout.addWidget(QLabel("ระดับเสียงพูด"))
+        layout.addLayout(self._volume_layout(self.voice_volume, self.voice_volume_label))
+        layout.addWidget(QLabel("เสียงภาษาไทย (ไฟล์ segment)"))
         layout.addWidget(self.combo)
         self.body.addWidget(card)
         self.status = QLabel("")
@@ -277,29 +323,67 @@ class AudioPage(BasePage):
         values = load_alert_settings()
         self.siren.setChecked(values["siren_enabled"])
         self.voice.setChecked(values["voice_enabled"])
+        self.siren_volume.setValue(values["siren_volume"])
+        self.voice_volume.setValue(values["voice_volume"])
+        self._update_volume_label(self.siren_volume, self.siren_volume_label)
+        self._update_volume_label(self.voice_volume, self.voice_volume_label)
         index = self.combo.findData(values["voice_model"])
         if index >= 0:
             self.combo.setCurrentIndex(index)
+        elif self.combo.count() > 0:
+            self.combo.setCurrentIndex(0)
         self.body.addStretch()
 
     def apply(self):
-        result = save_alert_settings(self.siren.isChecked(), self.voice.isChecked(), self.combo.currentData() or "th_m_1")
+        result = save_alert_settings(
+            self.siren.isChecked(),
+            self.voice.isChecked(),
+            self.combo.currentData() or "th_m_1",
+            self.siren_volume.value(),
+            self.voice_volume.value(),
+        )
         self.status.setText("บันทึกการตั้งค่าเสียงแล้ว")
         return result
+
+    @staticmethod
+    def _volume_row():
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setSingleStep(5)
+        label = QLabel("100%")
+        label.setMinimumWidth(45)
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        slider.valueChanged.connect(lambda value: label.setText(f"{value}%"))
+        return slider, label
+
+    @staticmethod
+    def _volume_layout(slider, label):
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(slider, 1)
+        row.addWidget(label)
+        return row
+
+    @staticmethod
+    def _update_volume_label(slider, label):
+        label.setText(f"{slider.value()}%")
 
 
 class ZonePage(BasePage):
     zone_saved = pyqtSignal()
 
     def __init__(self, image_path=None):
-        super().__init__("โซนตรวจจับ", "ลากจุดควบคุมบนภาพเพื่อกำหนดพื้นที่ที่ต้องการตรวจจับ")
-        self.image = self._load_image(image_path)
-        self.points = [[64, 560], [320, 140], [576, 560]]
+        super().__init__(
+            "โซนตรวจจับ",
+            "ลากจุดควบคุมบนภาพ 16:9 เพื่อกำหนดพื้นที่ ระบบจะบันทึกพิกัดให้ตรงกับภาพ 640×640 ที่ส่งเข้าโมเดล",
+        )
+        self.image, self._preview_transform = self._load_image(image_path)
+        self.points = [[64, 480], [320, 160], [576, 480]]
         self.drag_index = None
         content = QHBoxLayout()
         content.setSpacing(16)
         self.image_label = QLabel(alignment=Qt.AlignCenter)
-        self.image_label.setMinimumSize(520, 520)
+        self.image_label.setMinimumSize(520, 320)
         self.image_label.setStyleSheet("background:#020617; border:1px solid #26364D; border-radius:10px;")
         self.image_label.mousePressEvent = self.mouse_press
         self.image_label.mouseMoveEvent = self.mouse_move
@@ -313,7 +397,11 @@ class ZonePage(BasePage):
         self.preset.currentTextChanged.connect(self.load_zone)
         right.addWidget(QLabel("รูปแบบโซน"))
         right.addWidget(self.preset)
-        instruction = QLabel("ลากจุดสีขาวทั้ง 3 จุดเพื่อกำหนดพื้นที่ตรวจจับ\nจากนั้นกด บันทึกการตั้งค่า ด้านล่าง")
+        instruction = QLabel(
+            "ลากจุดสีขาวทั้ง 3 จุดบนภาพที่มองเห็น\n"
+            "พิกัดจะถูกแปลงกลับเป็นกรอบ 640×640 อัตโนมัติ\n"
+            "จากนั้นกด บันทึกการตั้งค่า ด้านล่าง"
+        )
         instruction.setObjectName("muted")
         instruction.setWordWrap(True)
         right.addWidget(instruction)
@@ -331,47 +419,83 @@ class ZonePage(BasePage):
     def _load_image(image_path):
         image = cv2.imread(str(image_path)) if image_path and Path(image_path).is_file() else None
         if image is None:
-            image = np.zeros((VIEW_H, VIEW_W, 3), dtype=np.uint8)
-        return letterbox(image, (VIEW_W, VIEW_H))
+            image = np.zeros((PREVIEW_H, PREVIEW_W, 3), dtype=np.uint8)
+        _, model_transform = letterbox_with_meta(image, (VIEW_W, VIEW_H))
+        preview, preview_transform = letterbox_with_meta(
+            image, (PREVIEW_W, PREVIEW_H)
+        )
+        return preview, {"model": model_transform, "preview": preview_transform}
 
     def set_image(self, image_path=None):
         """Reload the preview when the parent window reuses this page."""
-        self.image = self._load_image(image_path)
+        self.image, self._preview_transform = self._load_image(image_path)
         self.update_view()
 
     def update_view(self):
         frame = self.image.copy()
         overlay = frame.copy()
-        polygon = np.array(self.points, np.int32)
+        preview_points = [
+            self._model_point_to_preview(point) for point in self.points
+        ]
+        polygon = np.array(preview_points, np.int32)
         cv2.fillPoly(overlay, [polygon], (30, 80, 180))
         frame = cv2.addWeighted(overlay, 0.28, frame, 0.72, 0)
         cv2.polylines(frame, [polygon], True, (56, 189, 248), 3)
-        for index, (x, y) in enumerate(self.points, 1):
+        for index, (x, y) in enumerate(preview_points, 1):
             cv2.circle(frame, (x, y), 12, (255, 255, 255), -1)
             cv2.circle(frame, (x, y), 12, (56, 189, 248), 2)
             cv2.putText(frame, str(index), (x - 5, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (15, 23, 42), 2)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = QImage(rgb.data, VIEW_W, VIEW_H, 3 * VIEW_W, QImage.Format_RGB888).copy()
+        image = QImage(rgb.data, PREVIEW_W, PREVIEW_H, 3 * PREVIEW_W, QImage.Format_RGB888).copy()
         self.image_label.setPixmap(QPixmap.fromImage(image).scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
+    def _model_point_to_preview(self, point):
+        model = self._preview_transform["model"]
+        preview = self._preview_transform["preview"]
+        source_x = (float(point[0]) - model["offset_x"]) / max(model["scale"], 1e-9)
+        source_y = (float(point[1]) - model["offset_y"]) / max(model["scale"], 1e-9)
+        preview_x = source_x * preview["scale"] + preview["offset_x"]
+        preview_y = source_y * preview["scale"] + preview["offset_y"]
+        return (
+            max(0, min(PREVIEW_W - 1, int(round(preview_x)))),
+            max(0, min(PREVIEW_H - 1, int(round(preview_y)))),
+        )
+
+    def _preview_point_to_model(self, point):
+        model = self._preview_transform["model"]
+        preview = self._preview_transform["preview"]
+        source_x = (float(point[0]) - preview["offset_x"]) / max(preview["scale"], 1e-9)
+        source_y = (float(point[1]) - preview["offset_y"]) / max(preview["scale"], 1e-9)
+        if not (
+            0 <= source_x < preview["source_w"]
+            and 0 <= source_y < preview["source_h"]
+        ):
+            return None
+        model_x = source_x * model["scale"] + model["offset_x"]
+        model_y = source_y * model["scale"] + model["offset_y"]
+        return (
+            max(0, min(VIEW_W - 1, int(round(model_x)))),
+            max(0, min(VIEW_H - 1, int(round(model_y)))),
+        )
+
     def _image_position(self, event):
-        """Convert the displayed, aspect-fit image coordinate to 640x640."""
+        """Convert the displayed 16:9 image coordinate to model space."""
         pixmap = self.image_label.pixmap()
         if pixmap is None or pixmap.isNull():
             return None
         scale = min(
-            self.image_label.width() / VIEW_W,
-            self.image_label.height() / VIEW_H,
+            self.image_label.width() / PREVIEW_W,
+            self.image_label.height() / PREVIEW_H,
         )
-        drawn_width = VIEW_W * scale
-        drawn_height = VIEW_H * scale
+        drawn_width = PREVIEW_W * scale
+        drawn_height = PREVIEW_H * scale
         offset_x = (self.image_label.width() - drawn_width) / 2
         offset_y = (self.image_label.height() - drawn_height) / 2
         x = (event.pos().x() - offset_x) / scale
         y = (event.pos().y() - offset_y) / scale
-        if not (0 <= x < VIEW_W and 0 <= y < VIEW_H):
+        if not (0 <= x < PREVIEW_W and 0 <= y < PREVIEW_H):
             return None
-        return int(x), int(y)
+        return self._preview_point_to_model((x, y))
 
     def mouse_press(self, event):
         position = self._image_position(event)
@@ -398,6 +522,11 @@ class ZonePage(BasePage):
 
     def mouse_release(self, event):
         self.drag_index = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "image") and self.image_label.width() > 10:
+            self.update_view()
 
     @staticmethod
     def read_zone(path):
@@ -500,7 +629,7 @@ class SettingsWindow(QMainWindow):
         page_specs = [
             ("ระยะเตือนภัย", "ruler", DistancePage()),
             ("โซนตรวจจับ", "scan", ZonePage(image_path)),
-            ("กล้อง", "camera", CameraPage()),
+            ("คำนวณระยะ", "ruler", CameraPage()),
             ("โมเดลตรวจจับ", "cpu", ModelPage()),
             ("เสียงแจ้งเตือน", "volume", AudioPage()),
         ]

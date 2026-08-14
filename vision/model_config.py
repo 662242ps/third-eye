@@ -14,7 +14,7 @@ MODELS_DIR = PROJECT_ROOT / "models"
 SETTINGS_DIR = PROJECT_ROOT / "settings"
 MODEL_SETTINGS_FILE = SETTINGS_DIR / "model_settings.json"
 
-DEFAULT_MODEL_RELATIVE = "best.pt"
+DEFAULT_MODEL_RELATIVE = "model5_150/best.pt"
 
 
 def list_available_models():
@@ -62,8 +62,9 @@ def _is_inside_models_dir(candidate):
 def load_model_settings():
     """Return ``(relative_path, absolute_path)`` for the selected model.
 
-    Falls back to ``models/best.pt`` and then to the first available model
-    if the saved selection is missing or no longer exists on disk.
+    Falls back to ``models/model5_150/best.pt`` and then to the first
+    available model if the saved selection is missing or no longer exists on
+    disk.
     """
     selected_relative = None
     if MODEL_SETTINGS_FILE.is_file():

@@ -20,13 +20,14 @@ main.py
 
 ```text
 settings/alert_settings.json       เสียงไซเรนและเสียงพูด
-settings/camera_settings.json      หมายเลขกล้องและ Focal Length
+settings/camera_settings.json      index กล้องภายในและ Focal Length
+settings/object_heights.json       ความสูงโดยประมาณของวัตถุแต่ละชนิด
 settings/distance_thresholds.json  ระยะอันตรายและระยะระวัง
 settings/model_settings.json       โมเดล YOLO ที่เลือก
 zones/active.txt                    จุดโซนตรวจจับ
 ```
 
-จากนั้นสร้าง worker สำหรับ YOLO และโหลดโมเดลใน worker แยกจาก UI พร้อม warm-up หนึ่งครั้งก่อนรับงานจริง
+จากนั้นสร้าง worker สำหรับ YOLO และโหลดโมเดลใน worker แยกจาก UI พร้อม warm-up หนึ่งครั้งก่อนรับงานจริง เสียงแจ้งเตือนจะใช้ไฟล์ WAV segment ที่เตรียมไว้แล้ว ไม่โหลดโมเดล TTS ในลูปวิดีโอ
 
 ## 3. รับแหล่งภาพ
 
@@ -92,7 +93,7 @@ WARNING -> ไซเรนเบาและห่างกว่า + เสี
 SAFE    -> ไม่ส่งเสียง
 ```
 
-มีการหน่วงและตรวจการเปลี่ยนระยะก่อนพูดซ้ำ เพื่อไม่ให้เสียงพูดซ้ำทุกเฟรม
+เสียงพูดถูกประกอบจากไฟล์ WAV segment ตามสถานะ ชนิดวัตถุ และจำนวนเมตร แล้วเล่นใน worker เสียงแยกจาก UI มีการหน่วงและตรวจการเปลี่ยนระยะก่อนพูดซ้ำ เพื่อไม่ให้เสียงพูดซ้ำทุกเฟรม
 
 ## 7. การหยุดระบบ
 
@@ -120,7 +121,9 @@ SAFE    -> ไม่ส่งเสียง
 | AI | `vision/yolo_thread.py` | YOLO 640×640, tracking, ระยะ และ risk |
 | พิกัดภาพ | `vision/frame_utils.py` | letterbox และแปลงพิกัดกลับ |
 | ไซเรน | `vision/alert_sound.py` | เสียง WARNING/DANGER และ priority |
-| เสียงพูด | `vision/voice_alert.py` | TTS ภาษาไทยและการลดการพูดซ้ำ |
+| เสียงพูด | `vision/voice_alert.py`, `vision/voice_segments.py` | ต่อ WAV segment ภาษาไทย ระดับเสียง และการลดการพูดซ้ำ |
+| ความสูงวัตถุ | `vision/object_height_config.py` | ค่าความสูงโดยประมาณสำหรับคำนวณระยะ |
+| ไฟล์เสียง | `assets/voice/segments/` | เสียงที่เล่นจริงระหว่างตรวจจับ |
 | ค่าถาวร | `settings/`, `zones/` | ค่าที่ผู้ใช้บันทึก |
 
 ## 9. จุดตรวจสอบเมื่อมีปัญหา
@@ -132,4 +135,4 @@ SAFE    -> ไม่ส่งเสียง
 5. ตรวจ `zones/active.txt` ว่ามีจุดอย่างน้อย 3 จุด
 6. ตรวจค่า danger < warning
 7. ตรวจการเปิดเสียงทั้งที่หน้าหลักและหน้าตั้งค่า
-8. รัน Unit Test ก่อนเปลี่ยนแปลงส่วนอื่น
+8. ตรวจไฟล์เสียงใน `assets/voice/segments/` และรัน Unit Test ก่อนเปลี่ยนแปลงส่วนอื่น

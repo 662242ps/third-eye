@@ -3,15 +3,16 @@ import os
 
 # ---- Fix OpenMP / Qt / Torch conflict ----
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-# Cap at 4 worker threads even on many-core machines: YOLO11s is a small
-# model and gains little past ~4 threads, while claiming more starves the
-# UI thread and the rest of the system (this was the main source of the
-# app "eating" the whole CPU).
-CPU_THREADS = max(1, min(4, os.cpu_count() or 2))
+# Keep up to four YOLO workers, while reserving one logical CPU for Qt,
+# decoding, and audio on smaller machines.
+CPU_THREADS = max(1, min(4, (os.cpu_count() or 2) - 1))
 os.environ.setdefault("OMP_NUM_THREADS", str(CPU_THREADS))
 os.environ.setdefault("MKL_NUM_THREADS", str(CPU_THREADS))
 os.environ.setdefault("NUMEXPR_NUM_THREADS", str(CPU_THREADS))
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+# Some older Windows sessions keep this deprecated variable globally. Remove
+# it before Qt starts so it cannot emit a warning on every application launch.
+os.environ.pop("QT_DEVICE_PIXEL_RATIO", None)
 
 import sys
 
