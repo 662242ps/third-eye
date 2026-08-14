@@ -234,6 +234,12 @@ class YoloThread(QThread):
             class_id for class_id, name in class_names
             if _normalize_label(name) in REAL_HEIGHT
         ]
+        if not self.class_ids:
+            supported = ", ".join(sorted(REAL_HEIGHT))
+            raise ValueError(
+                "โมเดลไม่มี class ที่ระบบรองรับ "
+                f"({supported})"
+            )
         self._warm_up()
         self.model_ready = True
         self.model_ready_signal.emit()

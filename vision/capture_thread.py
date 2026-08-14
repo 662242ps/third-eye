@@ -7,7 +7,7 @@ from threading import Event, Lock
 import cv2
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from vision.frame_utils import letterbox, letterbox_with_meta
+from vision.frame_utils import letterbox_with_meta
 
 
 class CaptureThread(QThread):
@@ -208,30 +208,31 @@ class CaptureThread(QThread):
                 read_failures = 0
 
                 original_frame = frame
-                display_frame = (
-                    letterbox(original_frame, self.output_size)
-                    if self.output_size
-                    else original_frame
-                )
+                # Prepare the display frame and its coordinate transform in
+                # one pass.  The old path called ``letterbox`` here and then
+                # called ``letterbox_with_meta`` again below only to recover
+                # the same display transform.  That performed an extra resize
+                # and allocation for every source frame.
+                display_transform = None
+                if self.output_size:
+                    display_frame, display_transform = letterbox_with_meta(
+                        original_frame, self.output_size
+                    )
+                else:
+                    display_frame = original_frame
+                    display_transform = {
+                        "scale": 1.0,
+                        "offset_x": 0,
+                        "offset_y": 0,
+                        "source_w": original_frame.shape[1],
+                        "source_h": original_frame.shape[0],
+                    }
                 model_frame = None
                 model_transform = None
                 if self.model_size:
                     model_frame, model_transform = letterbox_with_meta(
                         original_frame, self.model_size
                     )
-                    display_transform = None
-                    if self.output_size:
-                        _, display_transform = letterbox_with_meta(
-                            original_frame, self.output_size
-                        )
-                    else:
-                        display_transform = {
-                            "scale": 1.0,
-                            "offset_x": 0,
-                            "offset_y": 0,
-                            "source_w": original_frame.shape[1],
-                            "source_h": original_frame.shape[0],
-                        }
                     model_transform = {
                         "model": model_transform,
                         "display": display_transform,

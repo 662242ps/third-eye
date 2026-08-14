@@ -1466,6 +1466,15 @@ class MainWindow(QMainWindow):
     def on_yolo_ready(self):
         """Show ready only after model load, fuse, and warm-up are complete."""
         if self.sender() is self.yolo:
+            # Keep CPU inference below the UI, but do not leave a CUDA worker
+            # at LowestPriority after it has finished loading.  GPU inference
+            # is mostly asynchronous and benefits from normal scheduling.
+            priority = (
+                QThread.NormalPriority
+                if self.yolo.device == "cuda"
+                else QThread.LowestPriority
+            )
+            self.yolo.setPriority(priority)
             self.set_status("พร้อมใช้งาน", "#22c55e")
 
     def open_settings(self):

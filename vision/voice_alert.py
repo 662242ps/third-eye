@@ -40,6 +40,11 @@ TTS_INTRA_OP_THREADS = 1
 TTS_INTER_OP_THREADS = 1
 TTS_THREAD_PRIORITY = -2  # Windows THREAD_PRIORITY_LOWEST
 TTS_CACHE_LIMIT = 8
+# Runtime alerts can produce a different combined WAV for each object/status
+# and integer distance. Keep the temporary cache bounded across app launches
+# so changing volume or testing many videos cannot grow it forever.
+SEGMENT_CACHE_MAX_FILES = 128
+VOLUME_CACHE_MAX_FILES = 32
 SEGMENT_GAP_MS = 70
 SEGMENT_FINAL_PADDING_MS = 120
 # Bump this whenever the generated segment speed/padding policy changes so an
@@ -65,6 +70,26 @@ LOST_GRACE_S = 1.5
 # Require a candidate to remain visible for a short time before speaking.
 STABLE_S = 0.35
 MCI_ALIAS = "third_eye_voice"
+
+
+def _prune_wav_cache(directory, max_files):
+    """Keep only the newest generated WAV files in a temporary cache."""
+    try:
+        directory = Path(directory)
+        files = [
+            path for path in directory.glob("*.wav")
+            if path.is_file()
+        ]
+        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for stale in files[max(1, int(max_files)) :]:
+            try:
+                stale.unlink()
+            except OSError:
+                # Windows may briefly keep a file open while winsound is
+                # finishing playback. It can be removed on a later pass.
+                continue
+    except (OSError, TypeError, ValueError):
+        return
 
 THAI_LABELS = {
     "car": "\u0e23\u0e16\u0e22\u0e19\u0e15\u0e4c",
@@ -221,6 +246,11 @@ class VoiceAnnouncer:
         self._vachana_model = TTS_DIR / "voices" / "th_m_1.onnx"
         self._vachana_available = None
         self._voice_generation = 0
+
+        _prune_wav_cache(
+            TEMP_TTS_DIR / "segments", SEGMENT_CACHE_MAX_FILES
+        )
+        _prune_wav_cache(TEMP_TTS_DIR / "volume", VOLUME_CACHE_MAX_FILES)
 
         if sys.platform == "win32" and VOICE_DIR.is_dir():
             try:
@@ -499,6 +529,10 @@ class VoiceAnnouncer:
 
                     if not self._valid_tts_audio(cache_path):
                         self._concat_wavs(paths, cache_path)
+                        _prune_wav_cache(
+                            TEMP_TTS_DIR / "segments",
+                            SEGMENT_CACHE_MAX_FILES,
+                        )
                     if self._valid_tts_audio(cache_path):
                         play_path = self._scaled_wav_path(cache_path)
                         if play_path is None:
@@ -910,6 +944,7 @@ class VoiceAnnouncer:
                     output_file.setparams(params)
                     output_file.writeframes(frames)
             os.replace(temporary, output)
+            _prune_wav_cache(TEMP_TTS_DIR / "volume", VOLUME_CACHE_MAX_FILES)
             return output
         except (OSError, ValueError, wave.Error, struct.error):
             return path

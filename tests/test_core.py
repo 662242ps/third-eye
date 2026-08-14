@@ -1,5 +1,7 @@
 import unittest
 import math
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from vision.alert_config import _normalize
 from vision.alert_sound import ALARM_PROFILES
@@ -11,6 +13,7 @@ from vision.voice_alert import (
     SEGMENT_VOICE_ONLY,
     VOICE_SPEECH_ENABLED,
     VoiceAnnouncer,
+    _prune_wav_cache,
     _thai_distance,
     _thai_integer,
 )
@@ -206,6 +209,15 @@ class CoreLogicTests(unittest.TestCase):
         self.assertTrue(announcer.available)
         self.assertFalse(announcer._bundled_tts_available())
         self.assertFalse(announcer._play_bundled_tts("ทดสอบ"))
+
+    def test_runtime_voice_cache_is_bounded(self):
+        with TemporaryDirectory() as directory:
+            for index in range(5):
+                Path(directory, f"alert_{index}.wav").write_bytes(b"RIFF")
+            _prune_wav_cache(directory, 2)
+            self.assertLessEqual(
+                len(list(Path(directory).glob("*.wav"))), 2
+            )
 
     def test_letterbox_box_maps_back_to_original_frame(self):
         frame = __import__("numpy").zeros((360, 640, 3), dtype="uint8")
