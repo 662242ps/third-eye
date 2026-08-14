@@ -26,9 +26,7 @@ from vision.voice_segments import (
     trim_pcm_frames,
 )
 from vision.yolo_thread import (
-    CLASS_CONF,
     CPU_INFERENCE_INTERVAL_S,
-    LABEL_THAI,
     MAX_TRACK_SPEED_PX_S,
     MODEL_IMGSZ,
     YoloThread,
@@ -80,10 +78,6 @@ class CoreLogicTests(unittest.TestCase):
             5.0,
         )
 
-    def test_bus_is_calibrated_and_labeled(self):
-        self.assertIn("bus", CLASS_CONF)
-        self.assertEqual(LABEL_THAI["bus"], "รถบัส")
-
     def test_object_heights_are_complete_and_safe(self):
         values = normalize_object_heights({"car": 1.75, "truck": "bad"})
         self.assertEqual(values["car"], 1.75)
@@ -91,9 +85,9 @@ class CoreLogicTests(unittest.TestCase):
         self.assertEqual(set(values), set(DEFAULT_OBJECT_HEIGHTS))
 
     def test_object_height_out_of_range_uses_default(self):
-        values = normalize_object_heights({"car": 0, "bus": 99})
+        values = normalize_object_heights({"car": 0, "person": 99})
         self.assertEqual(values["car"], DEFAULT_OBJECT_HEIGHTS["car"])
-        self.assertEqual(values["bus"], DEFAULT_OBJECT_HEIGHTS["bus"])
+        self.assertEqual(values["person"], DEFAULT_OBJECT_HEIGHTS["person"])
 
     def test_result_image_round_trip_is_compact(self):
         # Keep this test independent from Qt/MainWindow startup and verify

@@ -190,7 +190,6 @@ class CameraPage(BasePage):
             "car": "รถยนต์",
             "truck": "รถบรรทุก",
             "motorcycle": "รถจักรยานยนต์",
-            "bus": "รถบัส",
             "person": "คน",
         }
         heights = load_object_heights()

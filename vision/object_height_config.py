@@ -16,7 +16,6 @@ DEFAULT_OBJECT_HEIGHTS = {
     "car": 1.50,
     "truck": 2.80,
     "motorcycle": 1.20,
-    "bus": 3.10,
 }
 
 

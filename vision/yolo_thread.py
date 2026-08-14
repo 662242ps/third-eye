@@ -59,7 +59,6 @@ CLASS_CONF = {
     "car": conf,
     "truck": conf,
     "motorcycle": conf,
-    "bus": conf,
 }
 
 # Keep the camera frame and the inference input square at exactly 640x640 so
@@ -108,7 +107,6 @@ LABEL_THAI = {
     "car": "รถยนต์",
     "truck": "รถบรรทุก",
     "motorcycle": "รถจักรยานยนต์",
-    "bus": "รถบัส",
     "person": "คน",
 }
 

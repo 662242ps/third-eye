@@ -20,7 +20,6 @@ SEGMENT_TEXT = {
     "car": "\u0e23\u0e16\u0e22\u0e19\u0e15\u0e4c",
     "motorcycle": "\u0e23\u0e16\u0e08\u0e31\u0e01\u0e23\u0e22\u0e32\u0e19\u0e22\u0e19\u0e15\u0e4c",
     "truck": "\u0e23\u0e16\u0e1a\u0e23\u0e23\u0e17\u0e38\u0e01",
-    "bus": "\u0e23\u0e16\u0e1a\u0e31\u0e2a",
     "person": "\u0e04\u0e19",
 }
 
@@ -28,7 +27,6 @@ OBJECT_SEGMENTS = {
     "car": "car",
     "motorcycle": "motorcycle",
     "truck": "truck",
-    "bus": "bus",
     "person": "person",
 }
 
