@@ -8,8 +8,8 @@ SETTINGS_DIR = PROJECT_ROOT / "settings"
 DISTANCE_SETTINGS_FILE = SETTINGS_DIR / "distance_thresholds.json"
 
 DEFAULT_THRESHOLDS = {
-    "danger": 5.0,
-    "warning": 20.0,
+    "danger": 20.0,
+    "warning": 40.0,
 }
 
 

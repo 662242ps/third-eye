@@ -9,14 +9,14 @@ CAMERA_SETTINGS_FILE = SETTINGS_DIR / "camera_settings.json"
 
 DEFAULT_CAMERA_SETTINGS = {
     "camera_index": 0,
-    "focal_length": 800.0,
+    "focal_length": 600.0,
 }
 
 
 def _normalize(data):
     try:
         camera_index = max(0, int(data.get("camera_index", 0)))
-        focal_length = float(data.get("focal_length", 800.0))
+        focal_length = float(data.get("focal_length", DEFAULT_CAMERA_SETTINGS["focal_length"]))
     except (TypeError, ValueError, AttributeError):
         return DEFAULT_CAMERA_SETTINGS.copy()
     if not math.isfinite(focal_length) or focal_length <= 0:

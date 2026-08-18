@@ -79,11 +79,11 @@ class CoreLogicTests(unittest.TestCase):
     def test_non_finite_calibration_values_use_defaults(self):
         self.assertEqual(
             normalize_camera({"focal_length": math.nan})["focal_length"],
-            800.0,
+            600.0,
         )
         self.assertEqual(
             _normalize_thresholds({"danger": math.inf, "warning": 40})["danger"],
-            5.0,
+            20.0,
         )
 
     def test_focal_length_calibration_formula(self):

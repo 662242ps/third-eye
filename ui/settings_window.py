@@ -605,6 +605,13 @@ class ZonePage(BasePage):
 
     def _image_position(self, event):
         """Convert the displayed 16:9 image coordinate to model space."""
+        position = self._preview_position(event)
+        if position is None:
+            return None
+        return self._preview_point_to_model(position)
+
+    def _preview_position(self, event):
+        """Convert a mouse event to the displayed preview coordinate system."""
         pixmap = self.image_label.pixmap()
         if pixmap is None or pixmap.isNull():
             return None
@@ -620,15 +627,21 @@ class ZonePage(BasePage):
         y = (event.pos().y() - offset_y) / scale
         if not (0 <= x < PREVIEW_W and 0 <= y < PREVIEW_H):
             return None
-        return self._preview_point_to_model((x, y))
+        return x, y
 
     def mouse_press(self, event):
-        position = self._image_position(event)
+        # Handles can lie in the model's letterbox padding (the default
+        # triangle uses y=0 and y=639), while the editor displays only the
+        # 16:9 image. Hit-test in displayed coordinates so those clipped
+        # handles remain draggable after resetting the zone.
+        position = self._preview_position(event)
         if position is None:
             return
         x, y = position
-        for index, (point_x, point_y) in enumerate(self.points):
-            if abs(point_x - x) < 24 and abs(point_y - y) < 24:
+        for index, (point_x, point_y) in enumerate(
+            self._model_point_to_preview(point) for point in self.points
+        ):
+            if (point_x - x) ** 2 + (point_y - y) ** 2 <= 18 ** 2:
                 self.drag_index = index
                 return
 
