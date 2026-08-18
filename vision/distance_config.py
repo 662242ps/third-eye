@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 
@@ -7,8 +8,8 @@ SETTINGS_DIR = PROJECT_ROOT / "settings"
 DISTANCE_SETTINGS_FILE = SETTINGS_DIR / "distance_thresholds.json"
 
 DEFAULT_THRESHOLDS = {
-    "danger": 5.0,
-    "warning": 20.0,
+    "danger": 20.0,
+    "warning": 40.0,
 }
 
 
@@ -19,9 +20,9 @@ def _normalize_thresholds(data):
     except (TypeError, ValueError, AttributeError):
         return DEFAULT_THRESHOLDS.copy()
 
-    if danger <= 0:
+    if not math.isfinite(danger) or danger <= 0:
         danger = DEFAULT_THRESHOLDS["danger"]
-    if warning <= danger:
+    if not math.isfinite(warning) or warning <= danger:
         warning = max(DEFAULT_THRESHOLDS["warning"], danger + 1.0)
 
     return {
