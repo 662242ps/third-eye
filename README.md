@@ -10,10 +10,11 @@ Third Eye เป็นโปรแกรมตรวจจับวัตถุ�
 เปิด PowerShell ในโฟลเดอร์โปรเจกต์ แล้วใช้คำสั่ง:
 
 ```powershell
-cd C:\CS3\project\pg
 .\cvce\Scripts\Activate.ps1
 python main.py
 ```
+
+> รันคำสั่งจากโฟลเดอร์ที่ดาวน์โหลดหรือ clone โปรเจกต์ไว้ ไม่ต้องใช้ path ของเครื่องผู้พัฒนา
 
 ถ้า PowerShell ไม่อนุญาตให้เปิด environment ให้ใช้คำสั่งนี้เฉพาะหน้าต่างปัจจุบัน:
 
@@ -33,7 +34,7 @@ python --version
 ผลของ `where.exe python` ควรมีบรรทัดนี้อยู่ด้านบน:
 
 ```text
-C:\CS3\project\pg\cvce\Scripts\python.exe
+.\cvce\Scripts\python.exe
 ```
 
 ถ้าไม่มี `cvce` หรือ environment เสีย ให้สร้างใหม่และติดตั้งแพ็กเกจ:
